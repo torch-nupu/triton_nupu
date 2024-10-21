@@ -65,7 +65,10 @@ def _build(name, src, srcdir, library_dirs, include_dirs, libraries):
         if icpx is not None:
             cc_cmd += ["-fsycl"]
         else:
+            cc_cmd += ["-fsycl"]
             cc_cmd += ["--std=c++17"]
+            # TODO: mv out of here
+            cc_cmd += ["-lOpenCL"]
     else:
         cc_cmd = [cc]
 

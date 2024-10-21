@@ -710,7 +710,8 @@ setup(
     install_requires=get_install_requires(),
     package_data=package_data,
     include_package_data=True,
-    ext_modules=[CMakeExtension("triton", "triton/_C/")],
+    # TODO: disable for dev, enable later
+    # ext_modules=[CMakeExtension("triton", "triton/_C/")],
     cmdclass={
         "build_ext": CMakeBuild,
         "build_py": CMakeBuildPy,

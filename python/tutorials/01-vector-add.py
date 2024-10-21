@@ -90,6 +90,8 @@ print(output_triton.cpu())
 print(f'The maximum difference between torch and triton is '
       f'{torch.max(torch.abs(output_torch.cpu() - output_triton.cpu()))}')
 
+exit(0)
+
 # %%
 # Seems like we're good to go!
 
