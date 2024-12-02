@@ -45,10 +45,9 @@ using ret = py::return_value_policy;
     pm.addPass(builder({val0, val1}));                                         \
   })
 #define ADD_PASS_WRAPPER_OPT_5(name, builder, ty0, ty1, ty2, ty3, ty4)         \
-  m.def(name, [](mlir::PassManager &pm, ty0 val0, ty1 val1, ty2 val2,          \
-                 ty3 val3, ty4 val4) {                                         \
-    pm.addPass(builder({val0, val1, val2, val3, val4}));                       \
-  })
+  m.def(name,                                                                  \
+        [](mlir::PassManager &pm, ty0 val0, ty1 val1, ty2 val2, ty3 val3,      \
+           ty4 val4) { pm.addPass(builder({val0, val1, val2, val3, val4})); })
 
 static uint32_t findKernels(llvm::Module &M,
                             std::set<llvm::Function *> &functions) {
@@ -68,8 +67,9 @@ void init_triton_intel_passes_ttir(py::module &&m) {
 }
 
 void init_triton_intel_passes_ttgpuir(py::module &&m) {
-  ADD_PASS_WRAPPER_0("add_to_llvmir",
-                     gpu::intel::createConvertTritonIntelGPUToLLVM);
+  ADD_PASS_WRAPPER_OPT_2("add_to_llvmir",
+                         gpu::intel::createConvertTritonIntelGPUToLLVM, bool,
+                         bool);
   ADD_PASS_WRAPPER_0("add_accelerate_matmul",
                      gpu::intel::createTritonIntelGPUAccelerateMatmul);
   ADD_PASS_WRAPPER_0("add_decompose_unsupported_conversions",
@@ -82,6 +82,7 @@ void init_triton_intel_passes_ttgpuir(py::module &&m) {
                      gpu::intel::createTritonIntelGPURemoveLayoutConversions);
   ADD_PASS_WRAPPER_0("add_rewrite_tensor_pointer",
                      gpu::intel::createTritonIntelGPURewriteTensorPointer);
+  ADD_PASS_WRAPPER_0("add_coalesce", gpu::intel::createTritonIntelGPUCoalesce);
   ADD_PASS_WRAPPER_OPT_2("add_prefetch_block",
                          gpu::intel::createTritonIntelGPUPrefetchBlock, int,
                          bool);
@@ -98,6 +99,11 @@ void init_triton_intel_passes_ttgpuir(py::module &&m) {
                      gpu::intel::createTritonIntelGPUReduceDataDuplication);
   ADD_PASS_WRAPPER_0("add_materialize_block_pointer",
                      gpu::intel::createTritonIntelGPUMaterializeBlockPointer);
+  ADD_PASS_WRAPPER_0("add_optimize_reduction_locality",
+                     gpu::intel::createTritonIntelGPUOptimizeReductionLocality);
+  ADD_PASS_WRAPPER_0(
+      "add_optimize_elementwise_parallelism",
+      gpu::intel::createTritonIntelGPUOptimizeElementwiseParallelism);
 }
 
 void init_triton_intel(py::module &&m) {
@@ -213,6 +219,18 @@ void init_triton_intel(py::module &&m) {
     mlir::registerTritonGENDialectTranslation(registry);
     context.appendDialectRegistry(registry);
     context.loadAllAvailableDialects();
+  });
+
+  // May do this after llvm ir according to user fmath flag.
+  m.def("set_fast_math", [](mlir::ModuleOp mod) {
+    using namespace mlir;
+    MLIRContext *ctx = mod.getContext();
+    mod.walk([&](Operation *op) {
+      if (auto fmIf = dyn_cast<arith::ArithFastMathInterface>(op))
+        op->setAttr(
+            fmIf.getFastMathAttrName(),
+            arith::FastMathFlagsAttr::get(ctx, arith::FastMathFlags::fast));
+    });
   });
 
   m.def("set_spv_target_triple", [](llvm::Module *mod) {
