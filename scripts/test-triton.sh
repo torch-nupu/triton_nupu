@@ -19,6 +19,7 @@ TEST_BENCHMARK_SOFTMAX=false
 TEST_BENCHMARK_GEMM=false
 TEST_BENCHMARK_ATTENTION=false
 TEST_INSTRUMENTATION=false
+TEST_INDUCTOR=false
 VENV=false
 TRITON_TEST_REPORTS=false
 TRITON_TEST_WARNING_REPORTS=false
@@ -68,6 +69,10 @@ while [ -v 1 ]; do
       TEST_INSTRUMENTATION=true
       shift
       ;;
+    --inductor)
+      TEST_INDUCTOR=true
+      shift
+      ;;
     --venv)
       VENV=true
       shift
@@ -111,7 +116,7 @@ while [ -v 1 ]; do
 done
 
 # Only run interpreter test when $TEST_INTERPRETER is true
-if [ "$TEST_UNIT" = false ] && [ "$TEST_CORE" = false ] && [ "$TEST_INTERPRETER" = false ] && [ "$TEST_TUTORIAL" = false ] && [ "$TEST_MICRO_BENCHMARKS" = false ] && [ "$TEST_BENCHMARK_SOFTMAX" = false ] && [ "$TEST_BENCHMARK_GEMM" = false ] && [ "$TEST_BENCHMARK_ATTENTION" = false ] && [ "$TEST_INSTRUMENTATION" = false ]; then
+if [ "$TEST_UNIT" = false ] && [ "$TEST_CORE" = false ] && [ "$TEST_INTERPRETER" = false ] && [ "$TEST_TUTORIAL" = false ] && [ "$TEST_MICRO_BENCHMARKS" = false ] && [ "$TEST_BENCHMARK_SOFTMAX" = false ] && [ "$TEST_BENCHMARK_GEMM" = false ] && [ "$TEST_BENCHMARK_ATTENTION" = false ] && [ "$TEST_INSTRUMENTATION" = false ] && [ "$TEST_INDUCTOR" = false ]; then
   TEST_UNIT=true
   TEST_CORE=true
   TEST_TUTORIAL=true
@@ -147,7 +152,7 @@ install_deps() {
     echo "**** Skipping installation of pytorch ****"
   else
     echo "**** Installing pytorch ****"
-    if [ "$TEST_BENCHMARK_SOFTMAX" = true ] || [ "$TEST_BENCHMARK_GEMM" = true ] || [ "$TEST_BENCHMARK_ATTENTION" = true ]; then
+    if ([ ! -v USE_IPEX ] || [ "$USE_IPEX" = 1 ]) && ([ "$TEST_BENCHMARK_SOFTMAX" = true ] || [ "$TEST_BENCHMARK_GEMM" = true ] || [ "$TEST_BENCHMARK_ATTENTION" = true ]); then
       $SCRIPTS_DIR/compile-pytorch-ipex.sh $([ $VENV = true ] && echo "--venv")
     else
       $SCRIPTS_DIR/install-pytorch.sh $([ $VENV = true ] && echo "--venv")
@@ -185,6 +190,9 @@ run_core_tests() {
   # run runtime tests serially to avoid race condition with cache handling.
   TRITON_DISABLE_LINE_INFO=1 TRITON_TEST_SUITE=runtime \
     pytest --verbose --device xpu runtime/
+
+  TRITON_TEST_SUITE=debug \
+    pytest --verbose -n ${PYTEST_MAX_PROCESSES:-8} test_debug.py --forked --device xpu
 
   # run test_line_info.py separately with TRITON_DISABLE_LINE_INFO=0
   TRITON_DISABLE_LINE_INFO=0 TRITON_TEST_SUITE=line_info \
@@ -256,14 +264,12 @@ run_benchmark_gemm() {
 
   echo "Default path:"
   TRITON_INTEL_ADVANCED_PATH=0 \
-    TRITON_INTEL_ENABLE_ADDRESS_PAYLOAD_OPT=1 \
     IGC_VISAOptions=" -enableBCR -nolocalra" \
     IGC_DisableLoopUnroll=1 \
     python $TRITON_PROJ/benchmarks/triton_kernels_benchmark/gemm_benchmark.py
 
   echo "Advanced path:"
   TRITON_INTEL_ADVANCED_PATH=1 \
-    TRITON_INTEL_ENABLE_ADDRESS_PAYLOAD_OPT=1 \
     IGC_VISAOptions=" -enableBCR -nolocalra" \
     IGC_DisableLoopUnroll=1 \
     python $TRITON_PROJ/benchmarks/triton_kernels_benchmark/gemm_benchmark.py
@@ -285,7 +291,6 @@ run_benchmark_attention() {
   echo "Advanced path:"
   TRITON_INTEL_ADVANCED_PATH=1 \
     TRITON_INTEL_ENABLE_ADDRESS_PAYLOAD_OPT=1 \
-    TRITON_INTEL_ENABLE_INSTR_SCHED=1 \
     IGC_VISAOptions=" -enableBCR" \
     python $TRITON_PROJ/benchmarks/triton_kernels_benchmark/flash_attention_fwd_benchmark.py
 }
@@ -298,13 +303,30 @@ run_instrumentation_tests() {
     return
   fi
 
-  SHARED_LIB_DIR=$(ls -1d $TRITON_PROJ/python/build/*lib*/triton/_C) || err "Could not find $TRITON_PROJ/python/build/*lib*/triton/_C, build Triton first"
+  INSTRUMENTATION_LIB_DIR=$(ls -1d $TRITON_PROJ/python/build/*lib*/triton/instrumentation) || err "Could not find $TRITON_PROJ/python/build/*lib*/triton/instrumentation, build Triton first"
 
   cd $TRITON_PROJ/python/test/unit
 
   TRITON_TEST_SUITE=instrumentation \
-    TRITON_ALWAYS_COMPILE=1 TRITON_DISABLE_LINE_INFO=0 LLVM_PASS_PLUGIN_PATH=${SHARED_LIB_DIR}/libGPUHello.so \
+    TRITON_ALWAYS_COMPILE=1 TRITON_DISABLE_LINE_INFO=0 LLVM_PASS_PLUGIN_PATH=${INSTRUMENTATION_LIB_DIR}/libGPUInstrumentationTestLib.so \
     pytest -vvv --device xpu instrumentation/test_gpuhello.py
+}
+
+run_inductor_tests() {
+  test -d pytorch || (
+    git clone https://github.com/pytorch/pytorch
+    rev=$(cat .github/pins/pytorch-upstream.txt)
+    cd pytorch
+    git checkout $rev
+  )
+
+  pip install pyyaml pandas scipy numpy psutil pyre_extensions torchrec
+
+  # TODO: Find the fastest Hugging Face model
+  ZE_AFFINITY_MASK=0 python pytorch/benchmarks/dynamo/huggingface.py --accuracy --float32 -dxpu -n10 --no-skip --dashboard --inference --freezing --total-partitions 1 --partition-id 0 --only AlbertForMaskedLM --backend=inductor --timeout=4800 --output=$(pwd -P)/inductor_log.csv
+
+  cat inductor_log.csv
+  grep AlbertForMaskedLM inductor_log.csv | grep -q ,pass,
 }
 
 test_triton() {
@@ -335,6 +357,9 @@ test_triton() {
   fi
   if [ "$TEST_INSTRUMENTATION" == true ]; then
     run_instrumentation_tests
+  fi
+  if [ "$TEST_INDUCTOR" == true ]; then
+    run_inductor_tests
   fi
 }
 

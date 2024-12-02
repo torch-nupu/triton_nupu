@@ -45,6 +45,14 @@ void TargetInfo::storeDShared(RewriterBase &rewriter, Location loc, Value ptr,
   });
 }
 
+bool TargetInfo::canUseStMatrix(RankedTensorType tensorTy,
+                                ArrayRef<unsigned> repShape,
+                                ArrayRef<unsigned> paddedRepShape,
+                                ArrayRef<unsigned> order,
+                                int swizzleByteSize) const {
+  return false;
+}
+
 void TargetInfo::storeMatrixShared(RewriterBase &rewriter, Location loc,
                                    Value ptr, Value val) const {
   llvm::report_fatal_error("IntelGPU does not support stmatrix");
@@ -246,6 +254,12 @@ void TargetInfo::assertFail(RewriterBase &rewriter, Location loc,
 
 int TargetInfo::getSharedAddressSpace() const {
   return TritonGEN::TritonGENMemorySpace::kWorkgroup;
+}
+
+bool TargetInfo::supportVectorizedAtomics() const {
+  // Note: not currently tested or used, but AMD generally supports vectorized
+  // atomics.
+  return true;
 }
 
 } // namespace mlir::triton::intel
