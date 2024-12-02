@@ -16,8 +16,6 @@
         "CMAKE_RUNTIME_OUTPUT_DIRECTORY": "${sourceDir}/build/bin",
         "LLVM_DIR": "llvm-dpcpp/build/lib/cmake/llvm",
         "MLIR_DIR": "llvm-dpcpp/build/lib/cmake/mlir",
-        "SPIRVToLLVMTranslator_FOUND": true,
-        "SPIRVToLLVMTranslator_INCLUDE_DIR": "llvm-dpcpp/llvm-spirv/include",
         "TRITON_BUILD_PYTHON_MODULE": true,
         "TRITON_BUILD_PROTON": false,
         "TRITON_BUILD_UT": false,
@@ -32,8 +30,7 @@
         "CMAKE_C_COMPILER": "llvm-dpcpp/build/bin/clang",
         "CMAKE_CXX_COMPILER": "llvm-dpcpp/build/bin/clang++",
         "LLVM_DIR": "llvm-mlir/build/lib/cmake/llvm",
-        "MLIR_DIR": "llvm-mlir/build/lib/cmake/mlir",
-        "SPIRVToLLVMTranslator_INCLUDE_DIR": "llvm-dpcpp/llvm-spirv/include"
+        "MLIR_DIR": "llvm-mlir/build/lib/cmake/mlir"
       }
     }
   ]

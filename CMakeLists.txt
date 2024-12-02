@@ -29,7 +29,7 @@ option(TRITON_BUILD_PROTON "Build the Triton Proton profiler" ${DEFAULT_BUILD_PR
 option(TRITON_BUILD_TUTORIALS "Build C++ Triton tutorials" ON)
 option(TRITON_BUILD_PYTHON_MODULE "Build Python Triton bindings" OFF)
 option(TRITON_BUILD_UT "Build C++ Triton Unit Tests" ON)
-option(TRITON_BUILD_WITH_ALL_LLVM_COMPONENTS "Build C++ Triton with all llvm components" ON)
+option(TRITON_BUILD_WITH_ALL_LLVM_COMPONENTS "Build C++ Triton with all llvm components" OFF)
 option(TRITON_BUILD_WITH_CCACHE "Build with ccache (if available)" ON)
 set(TRITON_CODEGEN_BACKENDS "" CACHE STRING "Enable different codegen backends")
 

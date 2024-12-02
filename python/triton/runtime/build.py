@@ -93,6 +93,9 @@ def _build(name, src, srcdir, library_dirs, include_dirs, libraries, extra_compi
         if icpx is not None:
             extra_compile_args += ["-fsycl"]
         else:
+            extra_compile_args += ["-fsycl"]
+            # TODO: mv out of here
+            extra_compile_args += ["-lOpenCL"]
             extra_compile_args += ["--std=c++17"]
         if os.name == "nt":
             library_dirs += [os.path.join(sysconfig.get_paths(scheme=scheme)["stdlib"], "..", "libs")]

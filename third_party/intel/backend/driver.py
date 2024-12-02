@@ -72,7 +72,8 @@ class CompilationHelper:
         self._library_dir = None
         self._include_dir = None
         self._libsycl_dir = None
-        self.libraries = ['ze_loader']
+        self.libraries = []
+        # self.libraries = ['ze_loader']
         if os.name != "nt":
             self.libraries += ["sycl"]
 
