@@ -60,7 +60,7 @@ def add_kernel(x_ptr,  # *Pointer* to first input vector.
 def add(x: torch.Tensor, y: torch.Tensor):
     # We need to preallocate the output.
     output = torch.empty_like(x)
-    assert x.is_xpu and y.is_xpu and output.is_xpu
+    # assert x.is_xpu and y.is_xpu and output.is_xpu
     n_elements = output.numel()
     # The SPMD launch grid denotes the number of kernel instances that run in parallel.
     # It is analogous to CUDA launch grids. It can be either Tuple[int], or Callable(metaparameters) -> Tuple[int].
@@ -81,8 +81,8 @@ def add(x: torch.Tensor, y: torch.Tensor):
 
 torch.manual_seed(0)
 size = 98432
-x = torch.rand(size, device='xpu')
-y = torch.rand(size, device='xpu')
+x = torch.rand(size, device='nupu')
+y = torch.rand(size, device='nupu')
 output_torch = x + y
 output_triton = add(x, y)
 print(output_torch.cpu())

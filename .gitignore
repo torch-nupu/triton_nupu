@@ -91,3 +91,6 @@ docs/sg_execution_times.rst
 .DS_Store
 
 CMakeUserPresets.json
+.clangd
+python/triton/_C/libtriton/
+third_party/intel/backend/lib/libsycl-spir64-unknown-unknown.ll

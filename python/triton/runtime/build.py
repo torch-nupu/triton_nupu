@@ -12,7 +12,7 @@ from .CLFinder import initialize_visual_studio_env
 
 def is_xpu():
     import torch
-    return torch.xpu.is_available()
+    return torch.xpu.is_available() or torch.nupu.is_available()
 
 
 @contextlib.contextmanager

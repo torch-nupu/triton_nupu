@@ -14,6 +14,7 @@
         "CMAKE_LINKER_TYPE": "LLD",
         "CMAKE_INSTALL_RPATH_USE_LINK_PATH": true,
         "CMAKE_RUNTIME_OUTPUT_DIRECTORY": "${sourceDir}/build/bin",
+        "FETCHCONTENT_UPDATES_DISCONNECTED": true,
         "LLVM_DIR": "llvm-dpcpp/build/lib/cmake/llvm",
         "MLIR_DIR": "llvm-dpcpp/build/lib/cmake/mlir",
         "TRITON_BUILD_PYTHON_MODULE": true,

@@ -158,9 +158,9 @@ class XPUUtils(object):
         mod = compile_module_from_src(Path(os.path.join(dirname, "ocl_driver.c")).read_text(), "spirv_utils")
         self.get_device_properties = mod.get_device_properties
         # self.load_binary = mod.load_binary
-        self.load_binary = partial(mod.load_binary, torch.xpu.current_stream(torch.xpu.current_device()).sycl_queue)
-        self.get_current_device = torch.xpu.current_device
-        self.get_current_stream = lambda idx=None: torch.xpu.current_stream(idx).sycl_queue
+        self.load_binary = partial(mod.load_binary, torch.nupu.current_stream(torch.nupu.current_device()).sycl_queue)
+        self.get_current_device = torch.nupu.current_device
+        self.get_current_stream = lambda idx=None: torch.nupu.current_stream(idx).sycl_queue
         # self.get_stream = lambda idx: torch._C._xpu_getCurrentRawStream
 
 
@@ -546,7 +546,7 @@ class XPUDriver(DriverBase):
     def get_current_target(self):
         import torch
         device = self.get_current_device()
-        dev_property = torch.xpu.get_device_capability(device)
+        dev_property = torch.nupu.get_device_capability(device)
         warp_size = 32
         return GPUTarget("xpu", dev_property, warp_size)
 
@@ -557,7 +557,7 @@ class XPUDriver(DriverBase):
     @staticmethod
     def is_active():
         import torch
-        return torch.xpu.is_available()
+        return torch.nupu.is_available()
 
     def get_benchmarker(self):
         from triton.testing import do_bench
