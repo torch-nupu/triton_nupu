@@ -228,7 +228,7 @@ class XPUBackend(BaseBackend):
         pm.run(mod)
 
         # Overwrite the threads_per_warp option with the module annotation.
-        opt.threads_per_warp = ir.ttgpuir.get_threads_per_warp(mod)
+        opt.threads_per_warp = intel.get_threads_per_warp(mod)
 
         # Run the TTIR -> TTGIR pass pipeline.
         pm = ir.pass_manager(mod.context)
@@ -255,7 +255,6 @@ class XPUBackend(BaseBackend):
         passes.ttgpuir.add_optimize_dot_operands(pm, True)
         if os.getenv("TRITON_INTEL_OPTIMIZE_REDUCTION_LOCALITY", "0") == "1":
             intel.passes.ttgpuir.add_optimize_reduction_locality(pm)
-            intel.passes.ttgpuir.add_optimize_elementwise_parallelism(pm)
         intel.passes.ttgpuir.add_remove_layout_conversions(pm)
         intel.passes.ttgpuir.add_reduce_data_duplication(pm)
         passes.ttgpuir.add_reorder_instructions(pm)
@@ -272,7 +271,7 @@ class XPUBackend(BaseBackend):
         num_warp_groups = src.get_int_attr("ttg.num-warp-groups-per-cta")
         if num_warp_groups is not None:
             metadata["num_warps"] *= num_warp_groups
-        threads_per_warp = ir.ttgpuir.get_threads_per_warp(src)
+        threads_per_warp = intel.get_threads_per_warp(src)
         metadata["threads_per_warp"] = threads_per_warp
         mod = src
         # TritonGPU -> LLVM-IR (MLIR)

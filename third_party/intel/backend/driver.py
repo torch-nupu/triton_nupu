@@ -163,6 +163,9 @@ class XPUUtils(object):
         self.get_current_stream = lambda idx=None: torch.nupu.current_stream(idx).sycl_queue
         # self.get_stream = lambda idx: torch._C._xpu_getCurrentRawStream
 
+    def wait(self):
+        self.wait_on_sycl_queue(self.get_sycl_queue())
+
 
 # ------------------------
 # Launcher
