@@ -139,17 +139,6 @@ void outputWarning(Location loc, const std::string &msg) {
 } // anonymous namespace
 
 /*****************************************************************************/
-/* Python bindings for triton::ir::ttgir                                     */
-/*****************************************************************************/
-
-void init_triton_ttgpuir(py::module &&m) {
-  m.def("get_threads_per_warp", [](mlir::ModuleOp &mod) -> py::object {
-    auto ret = mlir::triton::gpu::TritonGPUDialect::getThreadsPerWarp(mod);
-    return py::int_(ret);
-  });
-}
-
-/*****************************************************************************/
 /* Python bindings for ir                                                    */
 /*****************************************************************************/
 
@@ -817,11 +806,6 @@ void init_triton_ir(py::module &&m) {
       .def("get_fp8e4b15_ty",
            [](TritonOpBuilder &self) -> Type {
              return self.getBuilder().getI8Type();
-           })
-      .def("get_fp8e4m3b11fnuz_ty",
-           [](TritonOpBuilder &self) -> Type {
-             // TODO: align with upstream code to use i8
-             return self.getBuilder().getType<Float8E4M3B11FNUZType>();
            })
       .def("get_fp8e5_ty",
            [](TritonOpBuilder &self) -> Type {
@@ -1694,11 +1678,11 @@ void init_triton_ir(py::module &&m) {
              if (haveDiagnostics) {
                context->printOpOnDiagnostic(true);
                context->printStackTraceOnDiagnostic(true);
+               context->getDiagEngine().registerHandler([](Diagnostic &diag) {
+                 llvm::outs() << diag << "\n";
+                 return success();
+               });
              }
-             context->getDiagEngine().registerHandler([](Diagnostic &diag) {
-               llvm::outs() << diag << "\n";
-               return success();
-             });
              if (haveDump) {
                auto printingFlags = OpPrintingFlags();
                printingFlags.elideLargeElementsAttrs(16);
@@ -1815,9 +1799,6 @@ void init_triton_ir(py::module &&m) {
         if (failed(self.run(mod.getOperation())))
           throw std::runtime_error("PassManager::run failed");
       });
-
-  // ttgpu dialect bindings.
-  init_triton_ttgpuir(m.def_submodule("ttgpuir"));
 }
 
 void init_triton_env_vars(py::module &m) {
