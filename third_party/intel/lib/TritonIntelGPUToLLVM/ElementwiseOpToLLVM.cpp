@@ -8,39 +8,15 @@
 #include "triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h"
 
 using mlir::triton::gpu::ElementwiseOpConversionBase;
+using mlir::triton::gpu::MultipleOperandsRange;
 
 namespace {
 
 /* ----- FP8E5M2 ------ */
 // This data-type is the standard FP8E5M2 format
 static SmallVector<Value>
-Fp16_to_Fp8E5M2_func(Location loc, ConversionPatternRewriter &rewriter,
+Fp16_to_Fp8E5M2_RTNE(Location loc, ConversionPatternRewriter &rewriter,
                      const SmallVector<Value> &v) {
-  auto fp16x2VecTy = vec_ty(f16_ty, 2);
-  Value fp16x2Vec0 = undef(fp16x2VecTy);
-  Value fp16x2Vec1 = undef(fp16x2VecTy);
-  fp16x2Vec0 = insert_element(fp16x2VecTy, fp16x2Vec0, v[0], i32_val(0));
-  fp16x2Vec0 = insert_element(fp16x2VecTy, fp16x2Vec0, v[1], i32_val(1));
-  fp16x2Vec1 = insert_element(fp16x2VecTy, fp16x2Vec1, v[2], i32_val(0));
-  fp16x2Vec1 = insert_element(fp16x2VecTy, fp16x2Vec1, v[3], i32_val(1));
-
-  Value a0 = bitcast(fp16x2Vec0, i32_ty);
-  Value a1 = bitcast(fp16x2Vec1, i32_ty);
-
-  auto fp8x4VecTy = vec_ty(i8_ty, 4);
-  a0 = bitcast(a0, fp8x4VecTy);
-  a1 = bitcast(a1, fp8x4VecTy);
-
-  return {extract_element(i8_ty, a0, i32_val(1)),
-          extract_element(i8_ty, a0, i32_val(3)),
-          extract_element(i8_ty, a1, i32_val(1)),
-          extract_element(i8_ty, a1, i32_val(3))};
-}
-
-static SmallVector<Value>
-Fp16_to_Fp8E5M2_RTNE_func(Location loc, ConversionPatternRewriter &rewriter,
-                          const SmallVector<Value> &v) {
-
   Value val = zext(i32_ty, bitcast(v[0], i16_ty));
   Value sign = and_(i32_ty, val, i32_val(0x8000));
   Value nosign = and_(i32_ty, val, i32_val(0x7fff));
@@ -63,8 +39,32 @@ Fp16_to_Fp8E5M2_RTNE_func(Location loc, ConversionPatternRewriter &rewriter,
 }
 
 static SmallVector<Value>
-Fp8E5M2_to_Fp16_func(Location loc, ConversionPatternRewriter &rewriter,
-                     const SmallVector<Value> &v) {
+Fp16_to_Fp8E5M2_RTZ(Location loc, ConversionPatternRewriter &rewriter,
+                    const SmallVector<Value> &v) {
+  auto fp16x2VecTy = vec_ty(f16_ty, 2);
+  Value fp16x2Vec0 = undef(fp16x2VecTy);
+  Value fp16x2Vec1 = undef(fp16x2VecTy);
+  fp16x2Vec0 = insert_element(fp16x2VecTy, fp16x2Vec0, v[0], i32_val(0));
+  fp16x2Vec0 = insert_element(fp16x2VecTy, fp16x2Vec0, v[1], i32_val(1));
+  fp16x2Vec1 = insert_element(fp16x2VecTy, fp16x2Vec1, v[2], i32_val(0));
+  fp16x2Vec1 = insert_element(fp16x2VecTy, fp16x2Vec1, v[3], i32_val(1));
+
+  Value a0 = bitcast(fp16x2Vec0, i32_ty);
+  Value a1 = bitcast(fp16x2Vec1, i32_ty);
+
+  auto fp8x4VecTy = vec_ty(i8_ty, 4);
+  a0 = bitcast(a0, fp8x4VecTy);
+  a1 = bitcast(a1, fp8x4VecTy);
+
+  return {extract_element(i8_ty, a0, i32_val(1)),
+          extract_element(i8_ty, a0, i32_val(3)),
+          extract_element(i8_ty, a1, i32_val(1)),
+          extract_element(i8_ty, a1, i32_val(3))};
+}
+
+static SmallVector<Value> Fp8E5M2_to_Fp16(Location loc,
+                                          ConversionPatternRewriter &rewriter,
+                                          const SmallVector<Value> &v) {
   auto fp8x4VecTy = vec_ty(i8_ty, 4);
   Value a0 = undef(fp8x4VecTy);
   a0 = insert_element(fp8x4VecTy, a0, int_val(8, 0), i32_val(0));
@@ -89,9 +89,9 @@ Fp8E5M2_to_Fp16_func(Location loc, ConversionPatternRewriter &rewriter,
           extract_element(f16_ty, fp16x2Vec1, i32_val(1))};
 }
 
-static SmallVector<Value>
-Fp8E5M2_to_Bf16_func(Location loc, ConversionPatternRewriter &rewriter,
-                     const SmallVector<Value> &v) {
+static SmallVector<Value> Fp8E5M2_to_Bf16(Location loc,
+                                          ConversionPatternRewriter &rewriter,
+                                          const SmallVector<Value> &v) {
   auto fp8x4VecTy = vec_ty(i8_ty, 4);
   Value a0 = undef(fp8x4VecTy);
   a0 = insert_element(fp8x4VecTy, a0, int_val(8, 0), i32_val(0));
@@ -178,9 +178,9 @@ Fp8E5M2_to_Bf16_func(Location loc, ConversionPatternRewriter &rewriter,
           extract_element(bf16_ty, bf16x2Vec1, i32_val(1))};
 }
 
-static SmallVector<Value>
-Bf16_to_Fp8E5M2_func(Location loc, ConversionPatternRewriter &rewriter,
-                     const SmallVector<Value> &v) {
+static SmallVector<Value> Bf16_to_Fp8E5M2(Location loc,
+                                          ConversionPatternRewriter &rewriter,
+                                          const SmallVector<Value> &v) {
   auto bf16x2VecTy = vec_ty(bf16_ty, 2);
   Value bf16x2Vec0 = undef(bf16x2VecTy);
   Value bf16x2Vec1 = undef(bf16x2VecTy);
@@ -259,8 +259,8 @@ Bf16_to_Fp8E5M2_func(Location loc, ConversionPatternRewriter &rewriter,
 }
 
 static SmallVector<Value>
-Bf16_to_Fp8E5M2_RTNE_func(Location loc, ConversionPatternRewriter &rewriter,
-                          const SmallVector<Value> &v) {
+Bf16_to_Fp8E5M2_RTNE(Location loc, ConversionPatternRewriter &rewriter,
+                     const SmallVector<Value> &v) {
   Value val = zext(i32_ty, bitcast(v[0], i16_ty));
   Value sign = and_(i32_ty, val, i32_val(0x8000));
   Value nosign = and_(i32_ty, val, i32_val(0x7fff));
@@ -320,8 +320,8 @@ Bf16_to_Fp8E5M2_RTNE_func(Location loc, ConversionPatternRewriter &rewriter,
 //    - has multiple nans (when all exponent bits are 1)
 //    - has an exponent bias of 15 (vs. 7 for fp8e4m3)
 static SmallVector<Value>
-Fp8E4M3B15_to_Fp16_func(Location loc, ConversionPatternRewriter &rewriter,
-                        const SmallVector<Value> &v) {
+Fp8E4M3B15_to_Fp16(Location loc, ConversionPatternRewriter &rewriter,
+                   const SmallVector<Value> &v) {
   auto fp8x4VecTy = vec_ty(i8_ty, 4);
   Value a0 = undef(fp8x4VecTy);
   a0 = insert_element(fp8x4VecTy, a0, int_val(8, 0), i32_val(0));
@@ -357,8 +357,8 @@ Fp8E4M3B15_to_Fp16_func(Location loc, ConversionPatternRewriter &rewriter,
 }
 
 static SmallVector<Value>
-Fp16_to_Fp8E4M3B15_func(Location loc, ConversionPatternRewriter &rewriter,
-                        const SmallVector<Value> &v) {
+Fp16_to_Fp8E4M3B15(Location loc, ConversionPatternRewriter &rewriter,
+                   const SmallVector<Value> &v) {
   auto fp16x2VecTy = vec_ty(f16_ty, 2);
   Value fp16x2Vec0 = undef(fp16x2VecTy);
   Value fp16x2Vec1 = undef(fp16x2VecTy);
@@ -404,9 +404,9 @@ Fp16_to_Fp8E4M3B15_func(Location loc, ConversionPatternRewriter &rewriter,
 // has more than a single NaN values.
 
 // Fp8E4M3 -> Fp16 (packed)
-static SmallVector<Value>
-Fp8E4M3Nv_to_Fp16_func(Location loc, ConversionPatternRewriter &rewriter,
-                       const SmallVector<Value> &v) {
+static SmallVector<Value> Fp8E4M3Nv_to_Fp16(Location loc,
+                                            ConversionPatternRewriter &rewriter,
+                                            const SmallVector<Value> &v) {
   auto fp8x4VecTy = vec_ty(i8_ty, 4);
   Value a0 = undef(fp8x4VecTy);
   a0 = insert_element(fp8x4VecTy, a0, int_val(8, 0), i32_val(0));
@@ -478,9 +478,9 @@ Fp8E4M3Nv_to_Fp16_func(Location loc, ConversionPatternRewriter &rewriter,
 }
 
 // Fp16 -> Fp8E4M3 (packed)
-static SmallVector<Value>
-Fp16_to_Fp8E4M3Nv_func(Location loc, ConversionPatternRewriter &rewriter,
-                       const SmallVector<Value> &v) {
+static SmallVector<Value> Fp16_to_Fp8E4M3Nv(Location loc,
+                                            ConversionPatternRewriter &rewriter,
+                                            const SmallVector<Value> &v) {
   auto fp16x2VecTy = vec_ty(f16_ty, 2);
   Value fp16x2Vec0 = undef(fp16x2VecTy);
 
@@ -503,8 +503,8 @@ Fp16_to_Fp8E4M3Nv_func(Location loc, ConversionPatternRewriter &rewriter,
 }
 
 static SmallVector<Value>
-Fp16_to_Fp8E4M3Nv_RTNE_func(Location loc, ConversionPatternRewriter &rewriter,
-                            const SmallVector<Value> &v) {
+Fp16_to_Fp8E4M3Nv_RTNE(Location loc, ConversionPatternRewriter &rewriter,
+                       const SmallVector<Value> &v) {
   Value val = zext(i32_ty, bitcast(v[0], i16_ty));
   Value sign = and_(i32_ty, val, i32_val(0x8000));
   Value nosign = and_(i32_ty, val, i32_val(0x7fff));
@@ -556,9 +556,9 @@ Fp16_to_Fp8E4M3Nv_RTNE_func(Location loc, ConversionPatternRewriter &rewriter,
   return {extract_element(i8_ty, res, i32_val(1))};
 }
 
-static SmallVector<Value>
-Fp8E4M3Nv_to_Bf16_func(Location loc, ConversionPatternRewriter &rewriter,
-                       const SmallVector<Value> &v) {
+static SmallVector<Value> Fp8E4M3Nv_to_Bf16(Location loc,
+                                            ConversionPatternRewriter &rewriter,
+                                            const SmallVector<Value> &v) {
   auto fp8x4VecTy = vec_ty(i8_ty, 4);
   Value a0 = undef(fp8x4VecTy);
   a0 = insert_element(fp8x4VecTy, a0, int_val(8, 0), i32_val(0));
@@ -656,9 +656,9 @@ Fp8E4M3Nv_to_Bf16_func(Location loc, ConversionPatternRewriter &rewriter,
           extract_element(bf16_ty, bf16x2Vec1, i32_val(1))};
 }
 
-static SmallVector<Value>
-Bf16_to_Fp8E4M3Nv_func(Location loc, ConversionPatternRewriter &rewriter,
-                       const SmallVector<Value> &v) {
+static SmallVector<Value> Bf16_to_Fp8E4M3Nv(Location loc,
+                                            ConversionPatternRewriter &rewriter,
+                                            const SmallVector<Value> &v) {
   auto bf16x2VecTy = vec_ty(bf16_ty, 2);
   Value bf16x2Vec0 = undef(bf16x2VecTy);
   Value bf16x2Vec1 = undef(bf16x2VecTy);
@@ -737,8 +737,8 @@ Bf16_to_Fp8E4M3Nv_func(Location loc, ConversionPatternRewriter &rewriter,
 }
 
 static SmallVector<Value>
-Bf16_to_Fp8E4M3Nv_RTNE_func(Location loc, ConversionPatternRewriter &rewriter,
-                            const SmallVector<Value> &v) {
+Bf16_to_Fp8E4M3Nv_RTNE(Location loc, ConversionPatternRewriter &rewriter,
+                       const SmallVector<Value> &v) {
   Value val = zext(i32_ty, bitcast(v[0], i16_ty));
   Value sign = and_(i32_ty, val, i32_val(0x8000));
   Value nosign = and_(i32_ty, val, i32_val(0x7fff));
@@ -790,9 +790,9 @@ Bf16_to_Fp8E4M3Nv_RTNE_func(Location loc, ConversionPatternRewriter &rewriter,
   return {extract_element(i8_ty, res, i32_val(1))};
 }
 
-static SmallVector<Value> Bf16_to_Fp16_func(Location loc,
-                                            ConversionPatternRewriter &rewriter,
-                                            const SmallVector<Value> &v) {
+static SmallVector<Value> Bf16_to_Fp16(Location loc,
+                                       ConversionPatternRewriter &rewriter,
+                                       const SmallVector<Value> &v) {
   auto bf16x2VecTy = vec_ty(bf16_ty, 2);
 
   Value bf16x2Vec = undef(bf16x2VecTy);
@@ -860,72 +860,9 @@ inline Type getElementType(Value value) {
   return type;
 }
 
-inline SmallVector<Value> unpackI32(const SmallVector<Value> &inValues,
-                                    Type srcTy,
-                                    ConversionPatternRewriter &rewriter,
-                                    Location loc,
-                                    TypeConverter *typeConverter) {
-  auto tensorTy = dyn_cast<RankedTensorType>(srcTy);
-  if (!tensorTy)
-    return inValues;
-  auto encoding = dyn_cast<DotOperandEncodingAttr>(tensorTy.getEncoding());
-  if (!(encoding && isa<NvidiaMmaEncodingAttr>(encoding.getParent())))
-    return inValues;
-  SmallVector<Value> outValues;
-  for (auto v : inValues) {
-    // cast i32 to appropriate eltType vector and extract elements
-    auto eltType = typeConverter->convertType(tensorTy.getElementType());
-    auto vecType = vec_ty(eltType, 32 / eltType.getIntOrFloatBitWidth());
-    auto vec = bitcast(v, vecType);
-    for (int i = 0; i < 32 / eltType.getIntOrFloatBitWidth(); i++) {
-      outValues.push_back(extract_element(vec, i32_val(i)));
-    }
-  }
-  return outValues;
-}
-
-inline SmallVector<Value> packI32(const SmallVector<Value> &inValues,
-                                  Type srcTy,
-                                  ConversionPatternRewriter &rewriter,
-                                  Location loc, TypeConverter *typeConverter) {
-  auto tensorTy = dyn_cast<RankedTensorType>(srcTy);
-  if (!tensorTy)
-    return inValues;
-  auto encoding = dyn_cast<DotOperandEncodingAttr>(tensorTy.getEncoding());
-  if (!(encoding && isa<NvidiaMmaEncodingAttr>(encoding.getParent())))
-    return inValues;
-  SmallVector<Value> outValues;
-  auto eltType = typeConverter->convertType(tensorTy.getElementType());
-  int vecWidth = 32 / eltType.getIntOrFloatBitWidth();
-  auto vecType = vec_ty(eltType, vecWidth);
-  for (int i = 0; i < inValues.size(); i += vecWidth) {
-    Value vec = undef(vecType);
-    for (int j = 0; j < vecWidth; j++) {
-      vec = insert_element(vec, inValues[i + j], i32_val(j));
-    }
-    outValues.push_back(bitcast(vec, i32_ty));
-  }
-  return outValues;
-}
-
 typedef std::function<SmallVector<Value>(Location, ConversionPatternRewriter &,
                                          const SmallVector<Value> &)>
     ConverterT;
-
-class MultipleOperandsRange
-    : public iterator_range<SmallVector<SmallVector<Value>>::iterator> {
-  using ContainerT = SmallVector<SmallVector<Value>>;
-
-public:
-  using iterator_range<ContainerT::iterator>::iterator_range;
-  ContainerT::reference operator[](ContainerT::size_type idx) {
-    return begin()[idx];
-  }
-  ContainerT::const_reference operator[](ContainerT::size_type idx) const {
-    return begin()[idx];
-  }
-  ContainerT::size_type size() const { return end() - begin(); }
-};
 
 // Attempts to use vectorized conversions via inline PTX when possible.
 struct FpToFpOpConversion
@@ -997,39 +934,34 @@ struct FpToFpOpConversion
                     std::pair<ConverterT, size_t>>
         srcMap = {
             // F8 -> F16
-            {{F8E4M3B15TyID, F16TyID, undefRounding},
-             {Fp8E4M3B15_to_Fp16_func, 4}},
-            {{F8E4M3TyID, F16TyID, undefRounding}, {Fp8E4M3Nv_to_Fp16_func, 2}},
-            {{F8E5M2TyID, F16TyID, undefRounding}, {Fp8E5M2_to_Fp16_func, 4}},
+            {{F8E4M3B15TyID, F16TyID, undefRounding}, {Fp8E4M3B15_to_Fp16, 4}},
+            {{F8E4M3TyID, F16TyID, undefRounding}, {Fp8E4M3Nv_to_Fp16, 2}},
+            {{F8E5M2TyID, F16TyID, undefRounding}, {Fp8E5M2_to_Fp16, 4}},
             // F16 -> F8
             {{F16TyID, F8E4M3B15TyID, RoundingMode::RTZ},
-             {Fp16_to_Fp8E4M3B15_func, 4}},
+             {Fp16_to_Fp8E4M3B15, 4}},
             {{F16TyID, F8E4M3B15TyID, RoundingMode::RTNE},
              // TODO: provide proper implementation for RTNE rounding.
-             {Fp16_to_Fp8E4M3B15_func, 4}},
-            {{F16TyID, F8E4M3TyID, RoundingMode::RTZ},
-             {Fp16_to_Fp8E4M3Nv_func, 2}},
+             {Fp16_to_Fp8E4M3B15, 4}},
+            {{F16TyID, F8E4M3TyID, RoundingMode::RTZ}, {Fp16_to_Fp8E4M3Nv, 2}},
             {{F16TyID, F8E4M3TyID, RoundingMode::RTNE},
-             {Fp16_to_Fp8E4M3Nv_RTNE_func, 1}},
+             {Fp16_to_Fp8E4M3Nv_RTNE, 1}},
             {{F16TyID, F8E5M2TyID, RoundingMode::RTZ},
-             {Fp16_to_Fp8E5M2_func, 4}},
+             {Fp16_to_Fp8E5M2_RTZ, 4}},
             {{F16TyID, F8E5M2TyID, RoundingMode::RTNE},
-             {Fp16_to_Fp8E5M2_RTNE_func, 1}},
+             {Fp16_to_Fp8E5M2_RTNE, 1}},
             // F8 -> BF16
-            {{F8E5M2TyID, BF16TyID, undefRounding}, {Fp8E5M2_to_Bf16_func, 4}},
-            {{F8E4M3TyID, BF16TyID, undefRounding},
-             {Fp8E4M3Nv_to_Bf16_func, 4}},
+            {{F8E5M2TyID, BF16TyID, undefRounding}, {Fp8E5M2_to_Bf16, 4}},
+            {{F8E4M3TyID, BF16TyID, undefRounding}, {Fp8E4M3Nv_to_Bf16, 4}},
             // BF16 -> F8
-            {{BF16TyID, F8E5M2TyID, RoundingMode::RTZ},
-             {Bf16_to_Fp8E5M2_func, 4}},
+            {{BF16TyID, F8E5M2TyID, RoundingMode::RTZ}, {Bf16_to_Fp8E5M2, 4}},
             {{BF16TyID, F8E5M2TyID, RoundingMode::RTNE},
-             {Bf16_to_Fp8E5M2_RTNE_func, 1}},
-            {{BF16TyID, F8E4M3TyID, RoundingMode::RTZ},
-             {Bf16_to_Fp8E4M3Nv_func, 4}},
+             {Bf16_to_Fp8E5M2_RTNE, 1}},
+            {{BF16TyID, F8E4M3TyID, RoundingMode::RTZ}, {Bf16_to_Fp8E4M3Nv, 4}},
             {{BF16TyID, F8E4M3TyID, RoundingMode::RTNE},
-             {Bf16_to_Fp8E4M3Nv_RTNE_func, 1}},
+             {Bf16_to_Fp8E4M3Nv_RTNE, 1}},
             // BF16 -> F16
-            {{BF16TyID, F16TyID, undefRounding}, {Bf16_to_Fp16_func, 2}},
+            {{BF16TyID, F16TyID, undefRounding}, {Bf16_to_Fp16, 2}},
         };
 
     std::tuple<TypeID, TypeID, RoundingMode> key = {
@@ -1057,7 +989,7 @@ struct FpToFpOpConversion
 
     if (dstElementType.isFloat8E5M2() || dstElementType.isFloat8E4M3FN()) {
       assert(roundingMode.has_value() &&
-             "Rounding mode must be specified for convertsions to fp8");
+             "Rounding mode must be specified for conversions to fp8");
 
       // For now only RTNE is supported for conversions from fp16 to fp8
       if (!srcElementType.isF32() &&
@@ -1097,6 +1029,7 @@ struct FpToFpOpConversion
     auto [cvtFunc, numElements] =
         getConversionFunc(srcType, dstType, roundingMode);
     SmallVector<Value> inVals;
+    inVals.reserve(std::min(numElements, operands.size()));
     for (unsigned i = 0; i < std::min(numElements, operands.size()); i++) {
       inVals.push_back(operands[i][0]);
     }
@@ -1122,8 +1055,7 @@ Value EmitDualBF16ElementwiseOp(Location loc,
   auto v0 = intel::convertBf16ToFp32(loc, rewriter, operands[0][0]);
   auto v1 = intel::convertBf16ToFp32(loc, rewriter, operands[0][1]);
   auto result = rewriter.create<OP>(loc, f32_ty, v0, v1);
-  auto undefRounding = static_cast<RoundingMode>(-1);
-  return intel::convertFp32ToBf16(loc, rewriter, result, undefRounding);
+  return intel::convertFp32ToBf16(loc, rewriter, result, RoundingMode::RTNE);
 }
 
 struct ExternElementwiseOpConversion
@@ -1250,11 +1182,9 @@ struct SIToFPOpConversion
     Type inElemTy = getElementType(op.getIn());
     Type outElemTy = getElementType(op.getOut());
     if (outElemTy.isBF16() && inElemTy.isInteger(8) && operands.size() >= 4) {
-      SmallVector<Value> outVals;
       auto value = rewriter.create<LLVM::SIToFPOp>(loc, f32_ty, operands[0][0]);
       return {
           intel::convertFp32ToBf16(loc, rewriter, value, RoundingMode::RTNE)};
-      llvm_unreachable("");
     } else if (outElemTy.isBF16()) {
       auto value = rewriter.create<LLVM::SIToFPOp>(loc, f32_ty, operands[0][0]);
       return {
@@ -1323,9 +1253,8 @@ struct TruncFOpConversion
       return {// Trunc uses the default rounding mode: RTNE
               intel::convertFp32ToBf16(loc, rewriter, operands[0][0],
                                        RoundingMode::RTNE)};
-    } else {
-      return {rewriter.create<LLVM::FPTruncOp>(loc, elemTy, operands[0][0])};
     }
+    return {rewriter.create<LLVM::FPTruncOp>(loc, elemTy, operands[0][0])};
   }
 };
 
@@ -1488,7 +1417,6 @@ void populateElementwiseOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
     ModuleAxisInfoAnalysis &axisInfoAnalysis, const TargetInfoBase &targetInfo,
     PatternBenefit benefit) {
-  using namespace mlir::triton::gpu;
 
   patterns.add<PreciseSqrtOpConversion>(typeConverter, axisInfoAnalysis,
                                         benefit);
@@ -1511,7 +1439,6 @@ void populateElementwiseOpToLLVMPatterns(
   patterns.add<ExtFOpConversion>(typeConverter, axisInfoAnalysis, benefit);
   patterns.add<TruncFOpConversion>(typeConverter, axisInfoAnalysis, benefit);
   patterns.add<FPToSIOpConversion>(typeConverter, axisInfoAnalysis, benefit);
-
   patterns.add<SIToFPOpConversion>(typeConverter, axisInfoAnalysis, benefit);
   patterns.add<FpToFpOpConversion>(typeConverter, axisInfoAnalysis, benefit);
 
