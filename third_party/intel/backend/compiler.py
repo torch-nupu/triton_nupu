@@ -121,10 +121,17 @@ class XPUBackend(BaseBackend):
 
     @staticmethod
     def supports_target(target: tuple):
-        return target.backend == 'xpu'
+        return target.backend == 'nupu'
 
     def __init__(self, target: tuple) -> None:
         super().__init__(target)
+        # TODO: fix from torch instead
+        if target.backend == 'nupu':
+            import torch
+            arch = torch.nupu.get_device_capability(torch.nupu.current_device())
+            self.properties = self.parse_target(arch)
+            self.binary_ext = "spv"
+            return
         if not isinstance(target.arch, dict):
             raise TypeError("target.arch is not a dict")
         self.properties = self.parse_target(target.arch)

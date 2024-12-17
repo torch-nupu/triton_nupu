@@ -551,7 +551,7 @@ class XPUDriver(DriverBase):
         device = self.get_current_device()
         dev_property = torch.nupu.get_device_capability(device)
         warp_size = 32
-        return GPUTarget("xpu", dev_property, warp_size)
+        return GPUTarget("nupu", dev_property, warp_size)
 
     def get_active_torch_device(self):
         import torch
