@@ -611,11 +611,6 @@ public:
   bool sublayoutIsZero(ArrayRef<StringAttr> inDimNames,
                        ArrayRef<StringAttr> outDimNames) const;
 
-  // Is the sublayout defined from dimNames to dimNames the identity?
-  // In particular, is the input and  output size in these dimensions
-  // the same, and are the bases the identity?
-  bool squareSublayoutIsIdentity(ArrayRef<StringAttr> dimNames) const;
-
   // Computes and returns L(x, y, z).
   //
   // If you want to apply the layout to mlir Values instead of integers, that
@@ -679,6 +674,10 @@ public:
 
   // Get the layout that is the inverse of this layout.
   [[nodiscard]] LinearLayout invert() const;
+  // Compute and return a psueodinverse of this layout. This is a layout such
+  // that `B = A.psuedoinvert()` implies that `A(B(x)) = I`. If `A` is
+  // invertible, then this returns `A^-1`.
+  [[nodiscard]] LinearLayout pseudoinvert() const;
 
   // For each in-dim, returns a bitmask of the "free variables" in the layout
   // function.

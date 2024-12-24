@@ -225,14 +225,13 @@ bool ReduceOpHelper::isSupportedLayout() {
   }
 
   auto srcLayout = getSrcLayout();
-  if (isa<BlockedEncodingAttr>(srcLayout)) {
+  if (isa<BlockedEncodingAttr, LinearEncodingAttr, SliceEncodingAttr>(
+          srcLayout)) {
     return true;
   }
+
   if (auto mmaLayout = dyn_cast<MmaEncodingTrait>(srcLayout)) {
     return mmaLayout.supportReduction();
-  }
-  if (auto sliceLayout = dyn_cast<SliceEncodingAttr>(srcLayout)) {
-    return true;
   }
   return false;
 }
@@ -497,13 +496,8 @@ bool GatherLoweringHelper::isWarpLocal() {
   // in the index and source tensors are the same. This means we don't need to
   // xor shuffle across threads before emitting index shuffles; we push warp
   // shuffling to layout conversions.
-  if (srcLayout->sublayout(kLane, otherDims) !=
-      idxLayout->sublayout(kLane, otherDims))
-    return false;
-
-  // Otherwise, the source layout has to be invertible. This primarily means
-  // the codegen path doesn't support broadcasted source layouts.
-  return srcLayout->isInvertible();
+  return srcLayout->sublayout(kLane, otherDims) ==
+         idxLayout->sublayout(kLane, otherDims);
 }
 
 unsigned getNumScratchElements(ArrayRef<unsigned> shape) {
@@ -725,8 +719,7 @@ bool matchMmaV3AndDotOperandLayout(RankedTensorType srcTy,
   auto ans = mmaLayout.getVersionMajor() == 3 &&
              dotOperandLayout.getOpIdx() == 0 &&
              mmaLayout.getWarpsPerCTA()[1] == 1 &&
-             !cvtNeedsSharedMemory(parentTy, srcTy) &&
-             (elementTypeSize == 16 || elementTypeSize == 8) &&
+             !cvtNeedsSharedMemory(parentTy, srcTy) && elementTypeSize == 8 &&
              dotOperandLayout.getKWidth() == 32 / elementTypeSize;
   return ans;
 }
