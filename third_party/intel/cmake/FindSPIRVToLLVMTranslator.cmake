@@ -4,8 +4,10 @@ include(FetchContent)
 
 if (NOT SPIRVToLLVMTranslator_FOUND)
 
+  if(NOT SPIRVToLLVMTranslator_SOURCE_DIR)
     set(SPIRVToLLVMTranslator_SOURCE_DIR
             "${CMAKE_CURRENT_BINARY_DIR}/SPIRVToLLVMTranslator")
+  endif()
     message(STATUS "SPIRV-LLVM location is not specified. Will try to download
                   SPIRVToLLVMTranslator from https://github.com/KhronosGroup/SPIRV-LLVM-Translator into
                   ${SPIRVToLLVMTranslator_SOURCE_DIR}")

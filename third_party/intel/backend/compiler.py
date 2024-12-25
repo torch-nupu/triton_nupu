@@ -162,7 +162,9 @@ class XPUBackend(BaseBackend):
         dev_prop['has_subgroup_2d_block_io'] = tgt_prop.get('has_subgroup_2d_block_io', False)
         dev_prop['has_bfloat16_conversions'] = tgt_prop.get('has_bfloat16_conversions', True)
 
-        device_arch = self.parse_device_arch(tgt_prop.get('architecture', 0))
+        # TODO(nupu): support `parse_device_arch()`
+        device_arch = None
+        # device_arch = self.parse_device_arch(tgt_prop.get('architecture', 0))
         if device_arch:
             if device_arch in self.device_props:
                 dev_prop.update(self.device_props[device_arch])
