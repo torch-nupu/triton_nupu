@@ -6,9 +6,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include <cassert>
 #include <cstddef>
 #include <iostream>
+#include <sstream>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include <CL/cl.h>
@@ -18,14 +22,53 @@
 #include <Python.h>
 // #include <numpy/arrayobject.h>
 
-#include "ocl_functions.h"
 #define CL_HPP_TARGET_OPENCL_VERSION 300
 #include "opencl.hpp"
 
-static std::vector<std::unique_ptr<sycl::device>> g_sycl_devices;
-static std::once_flag g_sycl_devices_flag;
+// TODO: print more debug infos if env `TRITON_DEBUG=1`
 
-// TODO: auto run after library loaded
+static std::vector<std::unique_ptr<sycl::device>> g_sycl_devices;
+
+#define CL_CHECK(code)                                                         \
+  {                                                                            \
+    if (code != CL_SUCCESS) {                                                  \
+      return std::make_tuple(nullptr, code);                                   \
+    }                                                                          \
+  }
+
+inline std::string parseOclResultCode(const cl_int code) {
+  const std::string prefix = "Triton Error [OCL]: ";
+  std::stringstream ss;
+  ss << prefix << "0x" << std::hex << code << "\n";
+  return ss.str();
+}
+
+std::tuple<cl_program, cl_int>
+create_module(cl_context context, cl_device_id device, uint8_t *binary_ptr,
+              size_t binary_size, const char *build_flags,
+              const bool is_spv = true) {
+  assert(binary_ptr != nullptr && "binary_ptr should not be NULL");
+  assert(build_flags != nullptr && "build_flags should not be NULL");
+  assert(is_spv == true && "is_spv should be true");
+
+  cl_int error_no;
+  cl_program module =
+      clCreateProgramWithIL(context, binary_ptr, binary_size, &error_no);
+  CL_CHECK(error_no);
+  // clRetainProgram(module);
+  CL_CHECK(clBuildProgram(module, 1, &device, nullptr, nullptr, nullptr));
+  return std::make_tuple(module, error_no);
+}
+
+std::tuple<cl_kernel, cl_int> create_function(cl_program module,
+                                              std::string_view func_name) {
+  cl_int error_no;
+  cl_kernel kernel = clCreateKernel(module, func_name.data(), &error_no);
+  CL_CHECK(error_no);
+  // clRetainKernel(kernel);
+  return std::make_tuple(kernel, CL_SUCCESS);
+}
+
 // NOTE: must keep logic same with pytorch `c10/xpu/XPUFunctions.cpp`
 void enumDevices() {
   auto platform_list = sycl::platform::get_platforms();
@@ -36,6 +79,9 @@ void enumDevices() {
     }
   }
 }
+
+static auto _tmp_func = []() { enumDevices(); };
+static int _tmp_v = (_tmp_func(), 0);
 
 static inline void gpuAssert(cl_int code) {
   if (code != CL_SUCCESS) {
@@ -63,7 +109,6 @@ static PyObject *getDeviceProperties(PyObject *self, PyObject *args) {
   if (!PyArg_ParseTuple(args, "i", &device_id))
     return NULL;
 
-  std::call_once(g_sycl_devices_flag, enumDevices);
   if (device_id > g_sycl_devices.size()) {
     std::cerr << "Device is not found " << std::endl;
     return NULL;
@@ -128,7 +173,6 @@ static PyObject *loadBinary(PyObject *self, PyObject *args) {
     return NULL;
   sycl::queue *sycl_queue = static_cast<sycl::queue *>(queue_ptr);
 
-  std::call_once(g_sycl_devices_flag, enumDevices);
   if (devId > g_sycl_devices.size()) {
     std::cerr << "Device is not found " << std::endl;
     return NULL;
@@ -148,6 +192,7 @@ static PyObject *loadBinary(PyObject *self, PyObject *args) {
   const auto ocl_context =
       sycl::get_native<sycl::backend::opencl, sycl::context>(sycl_context);
 
+  // TODO(nupu): report error msg here
   auto ocl_module = checkSyclErrors(create_module(
       ocl_context, ocl_device, binary_ptr, binary_size, build_flags, true));
 
@@ -189,7 +234,7 @@ static PyObject *loadBinary(PyObject *self, PyObject *args) {
 
 static PyMethodDef ModuleMethods[] = {
     {"load_binary", loadBinary, METH_VARARGS,
-     "Load provided SPV into ZE driver"},
+     "Load provided SPV into OpenCL driver"},
     {"get_device_properties", getDeviceProperties, METH_VARARGS,
      "Get the properties for a given device"},
     {NULL, NULL, 0, NULL} // sentinel

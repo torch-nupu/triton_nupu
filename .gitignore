@@ -94,3 +94,4 @@ CMakeUserPresets.json
 .clangd
 python/triton/_C/libtriton/
 third_party/intel/backend/lib/libsycl-spir64-unknown-unknown.ll
+third_party/intel/backend/*.so

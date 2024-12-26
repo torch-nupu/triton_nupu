@@ -136,6 +136,22 @@ class CompilationHelper:
 COMPILATION_HELPER = CompilationHelper()
 
 
+# support debug driver.c
+def compile_module_from_path(src_path, name):
+    tmpdir = os.path.dirname(src_path)
+    extra_compiler_args = []
+    extra_compiler_args.extend(['-g', '-O0'])
+    if COMPILATION_HELPER.libsycl_dir:
+        extra_compiler_args += ['-Wl,-rpath,' + COMPILATION_HELPER.libsycl_dir]
+    so = _build(name, src_path, tmpdir, COMPILATION_HELPER.library_dir, COMPILATION_HELPER.include_dir,
+                COMPILATION_HELPER.libraries, extra_compile_args=extra_compiler_args)
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, so)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def compile_module_from_src(src, name):
     key = hashlib.sha256(src.encode("utf-8")).hexdigest()
     cache = get_cache_manager(key)
@@ -174,8 +190,13 @@ class XPUUtils(object):
 
     def __init__(self):
         import torch
+        import torch.nupu  # type-hint # noqa
+
         dirname = os.path.dirname(os.path.realpath(__file__))
-        mod = compile_module_from_src(Path(os.path.join(dirname, "ocl_driver.c")).read_text(), "spirv_utils")
+        if os.environ.get("TRITON_DEBUG", "0") == "1":
+            mod = compile_module_from_path(os.path.join(dirname, "ocl_driver.c"), "spirv_utils")
+        else:
+            mod = compile_module_from_src(Path(os.path.join(dirname, "ocl_driver.c")).read_text(), "spirv_utils")
         self.get_device_properties = mod.get_device_properties
         # self.load_binary = mod.load_binary
         self.load_binary = partial(mod.load_binary, torch.nupu.current_stream(torch.nupu.current_device()).sycl_queue)
