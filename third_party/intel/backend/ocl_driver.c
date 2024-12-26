@@ -12,7 +12,6 @@
 #include <sstream>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <vector>
 
 #include <CL/cl.h>
@@ -23,27 +22,22 @@
 // #include <numpy/arrayobject.h>
 
 #define CL_HPP_TARGET_OPENCL_VERSION 300
+#define CL_HPP_ENABLE_EXCEPTIONS
 #include "opencl.hpp"
 
 // TODO: print more debug infos if env `TRITON_DEBUG=1`
+// TODO: release cl* objects correctly
 
 static std::vector<std::unique_ptr<sycl::device>> g_sycl_devices;
 
 #define CL_CHECK(code)                                                         \
   {                                                                            \
     if (code != CL_SUCCESS) {                                                  \
-      return std::make_tuple(nullptr, code);                                   \
+      return std::make_tuple(nullptr, code, #code);                            \
     }                                                                          \
   }
 
-inline std::string parseOclResultCode(const cl_int code) {
-  const std::string prefix = "Triton Error [OCL]: ";
-  std::stringstream ss;
-  ss << prefix << "0x" << std::hex << code << "\n";
-  return ss.str();
-}
-
-std::tuple<cl_program, cl_int>
+std::tuple<cl_program, cl_int, std::string>
 create_module(cl_context context, cl_device_id device, uint8_t *binary_ptr,
               size_t binary_size, const char *build_flags,
               const bool is_spv = true) {
@@ -55,18 +49,16 @@ create_module(cl_context context, cl_device_id device, uint8_t *binary_ptr,
   cl_program module =
       clCreateProgramWithIL(context, binary_ptr, binary_size, &error_no);
   CL_CHECK(error_no);
-  // clRetainProgram(module);
   CL_CHECK(clBuildProgram(module, 1, &device, nullptr, nullptr, nullptr));
-  return std::make_tuple(module, error_no);
+  return std::make_tuple(module, error_no, __FUNCTION__);
 }
 
-std::tuple<cl_kernel, cl_int> create_function(cl_program module,
-                                              std::string_view func_name) {
+std::tuple<cl_kernel, cl_int, std::string>
+create_function(cl_program module, std::string_view func_name) {
   cl_int error_no;
   cl_kernel kernel = clCreateKernel(module, func_name.data(), &error_no);
   CL_CHECK(error_no);
-  // clRetainKernel(kernel);
-  return std::make_tuple(kernel, CL_SUCCESS);
+  return std::make_tuple(kernel, error_no, __FUNCTION__);
 }
 
 // NOTE: must keep logic same with pytorch `c10/xpu/XPUFunctions.cpp`
@@ -83,25 +75,19 @@ void enumDevices() {
 static auto _tmp_func = []() { enumDevices(); };
 static int _tmp_v = (_tmp_func(), 0);
 
-static inline void gpuAssert(cl_int code) {
-  if (code != CL_SUCCESS) {
-    auto str = parseOclResultCode(code);
-    char err[1024] = {0};
-    strncat(err, str.c_str(), std::min(str.size(), size_t(1024)));
-    PyGILState_STATE gil_state;
-    gil_state = PyGILState_Ensure();
-    PyErr_SetString(PyExc_RuntimeError, err);
-    PyGILState_Release(gil_state);
-  }
-}
-
 template <typename T>
-static inline T checkSyclErrors(const std::tuple<T, cl_int> tuple) {
-  gpuAssert(std::get<1>(tuple));
-  if (PyErr_Occurred())
-    return nullptr;
-  else
-    return std::get<0>(tuple);
+static inline T
+checkSyclErrors(const std::tuple<T, cl_int, std::string> tuple) {
+  const auto code = std::get<1>(tuple);
+  if (code != CL_SUCCESS) {
+    const auto msg = std::get<2>(tuple);
+    std::stringstream ss;
+    ss << "Triton Error [OCL]: " << "0x" << std::hex << code << ", " << msg
+       << "\n";
+    auto str = ss.str();
+    throw std::runtime_error(ss.str());
+  }
+  return std::get<0>(tuple);
 }
 
 static PyObject *getDeviceProperties(PyObject *self, PyObject *args) {
@@ -114,35 +100,31 @@ static PyObject *getDeviceProperties(PyObject *self, PyObject *args) {
     return NULL;
   }
   const auto &sycl_device = g_sycl_devices[device_id];
+  cl_device_id ocl_device =
+      sycl::get_native<sycl::backend::opencl>(*sycl_device);
 
-  // Get device handle
-  cl_device_id phDevice = sycl::get_native<sycl::backend::opencl>(*sycl_device);
-
-  // use clhpp
-  cl::Device d = cl::Device(phDevice);
+  cl::Device d = cl::Device(ocl_device);
   int multiprocessor_count = d.getInfo<CL_DEVICE_MAX_NUM_SUB_GROUPS>();
   int sm_clock_rate = d.getInfo<CL_DEVICE_MAX_CLOCK_FREQUENCY>();
   int max_shared_mem = d.getInfo<CL_DEVICE_LOCAL_MEM_SIZE>();
   int max_group_size = d.getInfo<CL_DEVICE_MAX_WORK_GROUP_SIZE>();
+  int mem_clock_rate = d.getInfo<CL_DEVICE_MAX_CLOCK_FREQUENCY>();
+  int mem_bus_width = -1;
 
-  // TODO
-  // CL_DEVICE_SUB_GROUP_SIZES_INTEL
-  // int num_subgroup_sizes = d.getInfo<>();
-  int num_subgroup_sizes = 4;
+  std::vector<size_t> cl_subgroup_sizes =
+      d.getInfo<CL_DEVICE_SUB_GROUP_SIZES_INTEL>();
+  int num_subgroup_sizes = cl_subgroup_sizes.size();
   PyObject *subgroup_sizes = PyTuple_New(num_subgroup_sizes);
   for (int i = 0; i < num_subgroup_sizes; i++) {
-    PyTuple_SetItem(subgroup_sizes, i, PyLong_FromLong(1));
+    PyTuple_SetItem(subgroup_sizes, i, PyLong_FromLong(cl_subgroup_sizes[i]));
   }
 
-  // TODO
-  // int mem_clock_rate = pMemoryProperties[0].maxClockRate;
-  // int mem_bus_width = pMemoryProperties[0].maxBusWidth;
-
-  return Py_BuildValue(
-      "{s:i, s:i, s:i, s:i, s:i, s:i, s:N}", "max_shared_mem", max_shared_mem,
-      "multiprocessor_count", multiprocessor_count, "sm_clock_rate",
-      sm_clock_rate, "mem_clock_rate", -1, "mem_bus_width", -1,
-      "max_work_group_size", max_group_size, "sub_group_sizes", subgroup_sizes);
+  return Py_BuildValue("{s:i, s:i, s:i, s:i, s:i, s:i, s:N}", "max_shared_mem",
+                       max_shared_mem, "multiprocessor_count",
+                       multiprocessor_count, "sm_clock_rate", sm_clock_rate,
+                       "mem_clock_rate", mem_clock_rate, "mem_bus_width",
+                       mem_bus_width, "max_work_group_size", max_group_size,
+                       "sub_group_sizes", subgroup_sizes);
 }
 
 void freeKernel(PyObject *p) {
@@ -177,41 +159,19 @@ static PyObject *loadBinary(PyObject *self, PyObject *args) {
     std::cerr << "Device is not found " << std::endl;
     return NULL;
   }
-
   const auto &sycl_device = g_sycl_devices[devId];
 
   std::string kernel_name = name;
   const size_t binary_size = PyBytes_Size(py_bytes);
-
   uint8_t *binary_ptr = (uint8_t *)PyBytes_AsString(py_bytes);
-  // const sycl::context sycl_context =
-  //     sycl_device->get_platform().ext_oneapi_get_default_context();
   const sycl::context sycl_context = sycl_queue->get_context();
-
-  const auto ocl_device = sycl::get_native<sycl::backend::opencl>(*sycl_device);
   const auto ocl_context =
       sycl::get_native<sycl::backend::opencl, sycl::context>(sycl_context);
+  const auto ocl_device = sycl::get_native<sycl::backend::opencl>(*sycl_device);
 
-  // TODO(nupu): report error msg here
   auto ocl_module = checkSyclErrors(create_module(
       ocl_context, ocl_device, binary_ptr, binary_size, build_flags, true));
-
-  auto checkOCLErrors = [&](auto ocl_module) -> cl_kernel {
-    if (PyErr_Occurred()) {
-      // check for errors from module creation
-      return NULL;
-    }
-    cl_kernel ocl_kernel =
-        checkSyclErrors(create_function(ocl_module, kernel_name));
-    if (PyErr_Occurred()) {
-      // check for errors from kernel creation
-      return NULL;
-    }
-    return ocl_kernel;
-  };
-
-  // Retrieve the kernel properties (e.g. register spills).
-  cl_kernel ocl_kernel = checkOCLErrors(ocl_module);
+  auto ocl_kernel = checkSyclErrors(create_function(ocl_module, kernel_name));
 
   // auto mod = new sycl::kernel_bundle<sycl::bundle_state::executable>(
   //     sycl::make_kernel_bundle<sycl::backend::opencl,

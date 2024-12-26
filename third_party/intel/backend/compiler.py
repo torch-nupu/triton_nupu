@@ -128,7 +128,7 @@ class XPUBackend(BaseBackend):
 
     def __init__(self, target: tuple) -> None:
         super().__init__(target)
-        # TODO: fix from torch instead
+        # TODO(nupu): fix from torch instead
         if target.backend == 'nupu':
             import torch
             arch = torch.nupu.get_device_capability(torch.nupu.current_device())
