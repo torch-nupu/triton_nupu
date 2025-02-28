@@ -84,7 +84,6 @@ def _build(name, src, srcdir, library_dirs, include_dirs, libraries, extra_compi
                 # TODO: mv out of here
                 extra_compile_args += ["-fsycl"]
                 extra_compile_args += ["-lOpenCL"]
-
         if os.name == "nt":
             library_dirs = library_dirs + [
                 os.path.abspath(os.path.join(sysconfig.get_paths(scheme=scheme)["stdlib"], "..", "libs"))

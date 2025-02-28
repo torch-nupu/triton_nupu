@@ -746,7 +746,8 @@ class XPUDriver(DriverBase):
         return self.utils.get_current_device()
 
     def get_current_stream(self, device):
-        return self.utils.get_current_stream(device)
+        import torch
+        return torch.nupu.current_stream(device).sycl_queue
 
     def get_current_target(self):
         import torch
@@ -765,8 +766,11 @@ class XPUDriver(DriverBase):
 
     @staticmethod
     def is_active():
-        import torch
-        return torch.nupu.is_available()
+        try:
+            import torch
+            return torch.nupu.is_available()
+        except ImportError:
+            return False
 
     def get_benchmarker(self):
         from triton.testing import do_bench
