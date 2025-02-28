@@ -1,3 +1,4 @@
+#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -11,6 +12,10 @@
 
 #define GEN_PASS_CLASSES
 #include "TritonAMDGPUTransforms/Passes.h"
+
+#define DEBUG_TYPE "tritonamdgpu-block-pingpong"
+#define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
+#define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
 using namespace mlir;
 namespace ttg = mlir::triton::gpu;
@@ -42,7 +47,7 @@ class Pingponger {
   // rocdl.s.setprio will be mapped to `s_setprio` instruction which set the
   // priority of the warp within a SIMD, determines which warp to occupy the
   // instruction unit when they compete on the same instruction.
-  // We use this instruction in the pingpong sheduling to prevent warps from
+  // We use this instruction in the pingpong scheduling to prevent warps from
   // entering into the dot cluster while the other warp is still busy in the dot
   // cluster. Otherwise pingpong pattern can be broken and performance drops.
   // Currently pingpong only handles two warps, we only need 0/1 priorities.
@@ -62,11 +67,15 @@ private:
   LogicalResult genLocalSlice(OpBuilder &builder, Value v,
                               Attribute dotEncoding, unsigned opIdx,
                               unsigned numSlices, int64_t sliceWidth);
+  LogicalResult sliceDot(OpBuilder &builder, Location loc, tt::DotOp op,
+                         unsigned numSlices);
   void transformOnePPClusters(OpBuilder &builder, Location loc);
   LogicalResult transformFourPPClusters(OpBuilder &builder, Location loc);
+  LogicalResult transformTwoPPClusters(OpBuilder &builder, Location loc);
   void addAsymmetricSyncToLoop(OpBuilder &builder, Location loc);
   void updateOpInsertion(Operation *Op);
   void appendOp(Operation *Op);
+  void moveOpAndPredecessorsUpSameBlock(Operation *Op);
   void appendSlicedLoadAB(int slice);
   void appendClusterBarrier(OpBuilder &builder, Location loc);
   void appendOpWithPrio(OpBuilder &builder, Operation *Op, Location loc);
@@ -77,6 +86,28 @@ void Pingponger::appendOp(Operation *op) {
   assert(lastInsertedOp != nullptr);
   op->moveAfter(lastInsertedOp);
   lastInsertedOp = op;
+}
+
+// Move the given operations and any predecessors upon which it depends
+// up in the block to the last inserted operation. This does not move
+// operations that reaches the last inserted operation or
+// are not in the same block.
+void Pingponger::moveOpAndPredecessorsUpSameBlock(Operation *op) {
+  assert(lastInsertedOp != nullptr);
+  // TODO: Enable moving ops across blocks
+  assert(lastInsertedOp->isBeforeInBlock(op));
+  SetVector<Operation *> backwardSlice;
+  BackwardSliceOptions opt;
+  opt.omitBlockArguments = true;
+  Operation *checkedOp = lastInsertedOp;
+  opt.filter = [&checkedOp](Operation *op) {
+    return op->getBlock() == checkedOp->getBlock() &&
+           checkedOp->isBeforeInBlock(op);
+  };
+  getBackwardSlice(op, &backwardSlice, opt);
+  for (auto predOp : backwardSlice)
+    appendOp(predOp);
+  appendOp(op);
 }
 void Pingponger::appendSlicedLoadAB(int slice) {
   appendOp(subViewOps[0][slice]);
@@ -92,10 +123,10 @@ void Pingponger::appendSlicedLoadAB(int slice) {
 // Also, SchedBarrier with `0` is set here to tell compiler backend not to
 // reorder any instruction across this point.
 void Pingponger::appendClusterBarrier(OpBuilder &builder, Location loc) {
-  appendOp(builder.create<ROCDL::SchedBarrier>(loc, 0));
-  // MembarAnalysis can recognize gpu::BarrierOp and skip inserting additional
-  // barrier
+  //  MembarAnalysis can recognize gpu::BarrierOp and skip inserting additional
+  //  barrier
   appendOp(builder.create<gpu::BarrierOp>(loc));
+  appendOp(builder.create<ROCDL::SchedBarrier>(loc, 0));
 }
 void Pingponger::appendOpWithPrio(OpBuilder &builder, Operation *op,
                                   Location loc) {
@@ -116,6 +147,13 @@ void Pingponger::appendOpWithPrio(OpBuilder &builder, Operation *op,
 // high-level operations, inserting `setPrio` also has a same effect of
 // instruction scheduling boundary, too.
 void Pingponger::transformOnePPClusters(OpBuilder &builder, Location loc) {
+  auto dotLoc = dotOps[0]->getPrevNode();
+  // sched barrier to prevent memory ops from cross but leave other ops to be
+  // scheduled across the barrier.
+  auto preDotBar = builder.create<ROCDL::SchedBarrier>(loc, 1);
+  updateOpInsertion(dotLoc);
+  appendOp(preDotBar);
+
   // Memory cluster #0
   updateOpInsertion(lLoadOps[0]);
   appendOp(builder.create<ROCDL::SetPrioOp>(loc, highPriority));
@@ -124,10 +162,12 @@ void Pingponger::transformOnePPClusters(OpBuilder &builder, Location loc) {
   appendOp(lLoadOps[1]);
   appendOp(builder.create<ROCDL::SetPrioOp>(loc, lowPriority));
   appendOp(gLoadOps[1]);
-  appendOp(builder.create<ROCDL::SchedBarrier>(loc, 0));
 
   // Dot cluster #0
+  updateOpInsertion(preDotBar);
   appendOpWithPrio(builder, dotOps[0], loc);
+  // Add a remark for user feedback
+  dotOps[0]->emitRemark() << "Performed one ping pong cluster transformation\n";
 }
 
 void Pingponger::genOffsetConstants(Location loc, OpBuilder &builder,
@@ -148,10 +188,12 @@ LogicalResult Pingponger::genLocalSlice(OpBuilder &builder, Value v,
                                         int64_t sliceWidth) {
   SmallVector<Operation *> slices;
   SmallVector<Operation *> subviews;
-  auto memDesc = v.getDefiningOp()->getOperand(0);
+  // TODO: support transformed input to dot
+  auto localLoad = v.getDefiningOp<ttg::LocalLoadOp>();
+  if (!localLoad)
+    return failure();
+  auto memDesc = localLoad.getSrc();
   auto type = cast<ttg::MemDescType>(memDesc.getType());
-  auto encoding = cast<RankedTensorType>(v.getType()).getEncoding();
-  auto srcEncoding = cast<ttg::DotOperandEncodingAttr>(encoding);
   SmallVector<int64_t> shape = llvm::to_vector(type.getShape());
   Type elementType = type.getElementType();
   int64_t kIdx = opIdx == 0 ? 1 : 0;
@@ -160,9 +202,10 @@ LogicalResult Pingponger::genLocalSlice(OpBuilder &builder, Value v,
   if (sliceWidth < 16)
     return failure();
   auto dotOperandEnc = ttg::DotOperandEncodingAttr::get(
-      builder.getContext(), opIdx, dotEncoding, srcEncoding.getKWidth());
+      builder.getContext(), opIdx, dotEncoding, kWidth);
   auto subviewDescType = ttg::MemDescType::get(
-      shape, elementType, type.getEncoding(), type.getMemorySpace());
+      shape, elementType, type.getEncoding(), type.getMemorySpace(),
+      type.getMutableMemory(), type.getAllocShape());
   for (int i = 0; i < numSlices; i++) {
     SmallVector<Value> offsetsVal;
     SmallVector<int64_t> offsets = {0, 0};
@@ -183,32 +226,11 @@ LogicalResult Pingponger::genLocalSlice(OpBuilder &builder, Value v,
   return success();
 }
 
-// Transform a loop into four Dot - Memory (ping - pong) clusters
-// This transfrom is useful when the original dot tile is too large that there's
-// no enough register to hold data for a Dot cluster. This path slices the dot
-// into four pieces and pair with four clusters of reordered memory operations.
-// There are multiple guards at the boundary of each cluster.
-// (1) sched.barrier : with mask0 to prevent compiler backed from reroder
-//  instructions across the boundary
-// (2) gpu.barrier : ensures asymmetric synchronization at each point
-// (3) setprio (1->0) : in order to avoid incomming warp overtaking resource
-//  while the other warp is actively using it.
-//
-// Here's overview of the instruction clusters
-// mem0: global load A, local load A(1/4), local load B(1/4)
-// dot0: dot A(1/4) * B(1/4)
-// mem1: global load B, local load A(2/4), local load B(2/4)
-// dot1: dot A(2/4) * B(2/4)
-// mem2: local load A(3/4, 4/4), local load B(3/4, 4/4)
-// dot2: dot A(3/4) * B(3/4)
-// mem3: local store A and B
-// dot3: dot A(4/4) * B(4/4)
-
-LogicalResult Pingponger::transformFourPPClusters(OpBuilder &builder,
-                                                  Location loc) {
-  // First, slice local_loads and dot into 4 parts
-  unsigned numSlices = 4;
-  auto op = cast<tt::DotOp>(dotOps[0]);
+// Split dot into 'numSlices' pieces. This is required by pingpong scheduling
+// when it needs to schedule multiple dot clusters. Calls genLocalSlice to
+// create corresponding local_load slices.
+LogicalResult Pingponger::sliceDot(OpBuilder &builder, Location loc,
+                                   tt::DotOp op, unsigned numSlices) {
   builder.setInsertionPointToStart(forOp.getBody());
   auto typeB = op.getB().getType();
   auto shapeB = typeB.getShape();
@@ -224,7 +246,7 @@ LogicalResult Pingponger::transformFourPPClusters(OpBuilder &builder,
           .failed())
     return failure();
 
-  // Clone dots four times to consume the slices
+  // Clone dots to consume all the slices
   Operation *prevDot = op;
   for (int i = 0; i < numSlices; i++) {
     IRMapping mapping;
@@ -240,11 +262,41 @@ LogicalResult Pingponger::transformFourPPClusters(OpBuilder &builder,
   op->erase();
   for (auto loads : lLoadOps)
     loads->erase();
+  return success();
+}
 
+// Transform a loop into four Dot - Memory (ping - pong) clusters
+// This transform is useful when the original dot tile is too large that there's
+// not enough registers to hold data for a Dot cluster. This path slices the dot
+// into four pieces and pair with four clusters of reordered memory operations.
+// There are multiple guards at the boundary of each cluster.
+// (1) sched.barrier : with mask0 to prevent compiler backed from reordering
+//  instructions across the boundary
+// (2) gpu.barrier : ensures asymmetric synchronization at each point
+// (3) setprio (1->0) : in order to avoid incoming warp overtaking resource
+//  while the other warp is actively using it.
+//
+// Here's overview of the instruction clusters
+// mem0: global load A, local load A(1/4), local load B(1/4)
+// dot0: dot A(1/4) * B(1/4)
+// mem1: global load B, local load A(2/4), local load B(2/4)
+// dot1: dot A(2/4) * B(2/4)
+// mem2: local load A(3/4, 4/4), local load B(3/4, 4/4)
+// dot2: dot A(3/4) * B(3/4)
+// mem3: local store A and B
+// dot3: dot A(4/4) * B(4/4)
+
+LogicalResult Pingponger::transformFourPPClusters(OpBuilder &builder,
+                                                  Location loc) {
+  // First, slice local_loads and dot into 4 parts
+  if (sliceDot(builder, loc, dotOps[0], 4).failed())
+    return failure();
   builder.setInsertionPointAfter(gLoadOps[1]);
   // Reorder operations into four mem/dot clusters
 
   // mem0: global load A, local load A(1/4), local load B(1/4)
+  // set insertion point at the last global_load where all the addresses are
+  // ready to be used.
   updateOpInsertion(gLoadOps[1]);
   appendSlicedLoadAB(/*slice=*/0);
   appendClusterBarrier(builder, loc);
@@ -272,13 +324,70 @@ LogicalResult Pingponger::transformFourPPClusters(OpBuilder &builder,
   appendClusterBarrier(builder, loc);
 
   // mem3: local store A and B
-  updateOpInsertion(lStoreOps[1]);
+  // Matmul kernels may use the output of the dot product in another operation
+  // before the local store (e.g. persistent matmul epilogue). To accommodate
+  // such cases, we need to move the local store up in the loop.
+  moveOpAndPredecessorsUpSameBlock(lStoreOps[0]);
+  moveOpAndPredecessorsUpSameBlock(lStoreOps[1]);
   appendClusterBarrier(builder, loc);
 
   // dot3 (4/4)
   appendOpWithPrio(builder, dotSliceOps[3], loc);
   appendClusterBarrier(builder, loc);
 
+  // Add a remark for user feedback
+  dotSliceOps[0]->emitRemark()
+      << "Performed four ping pong cluster transformation\n";
+  return success();
+}
+
+// Transform a loop into two Dot - Memory (ping - pong) clusters
+// This is useful for the medium sized tile which doesn't fit to either one/four
+// cluster scheduling.
+LogicalResult Pingponger::transformTwoPPClusters(OpBuilder &builder,
+                                                 Location loc) {
+  // First, slice local_loads and dot into 2 parts
+  if (sliceDot(builder, loc, dotOps[0], 2).failed())
+    return failure();
+  // Reorder operations into two mem/dot clusters
+
+  // Memory cluster #0
+  // interleave local_loads and global_loads to minimize the stalling
+  // cycles, sched.barrier prevents backend from canceling the interleaved order
+  updateOpInsertion(gLoadOps[1]);
+  appendSlicedLoadAB(/*slice=*/0);
+  appendOp(builder.create<ROCDL::SchedBarrier>(loc, 0));
+  appendOp(gLoadOps[0]);
+  appendOp(builder.create<ROCDL::SchedBarrier>(loc, 0));
+  appendSlicedLoadAB(/*slice=*/1);
+  appendOp(builder.create<ROCDL::SchedBarrier>(loc, 0));
+  appendOp(gLoadOps[1]);
+  // The first cluster just fits into the two cluster pingpong and cannot
+  // include wait of the local_load inserted by the gpu.barrier, using s.barrier
+  // instead. backend will schedule the local memory fences later in the dot0
+  // cluster.
+  appendOp(builder.create<ROCDL::SBarrierOp>(loc));
+  appendOp(builder.create<ROCDL::SchedBarrier>(loc, 0));
+
+  // dot0 (1/2)
+  appendOpWithPrio(builder, dotSliceOps[0], loc);
+  appendClusterBarrier(builder, loc);
+
+  // mem1: local store A and B
+  // Matmul kernels may use the output of the dot product in another operation
+  // before the local store (e.g. persistent matmul epilogue). To accommodate
+  // such cases, we need to move the local store up in the loop.
+  moveOpAndPredecessorsUpSameBlock(lStoreOps[0]);
+  moveOpAndPredecessorsUpSameBlock(lStoreOps[1]);
+  appendClusterBarrier(builder, loc);
+
+  // dot1 (2/2)
+  appendOpWithPrio(builder, dotSliceOps[1], loc);
+  appendClusterBarrier(builder, loc);
+
+  // Add a remark for user feedback
+  dotSliceOps[0]->emitRemark()
+      << "Performed two ping pong cluster transformation\n";
   return success();
 }
 
@@ -317,7 +426,6 @@ void Pingponger::getDotPingponged() {
   OpBuilder builder(forOp);
   MLIRContext *ctx = forOp.getContext();
   Location loc = forOp.getLoc();
-  auto f16ty = builder.getF16Type();
 
   forOp->walk([&](Operation *op) {
     if (auto gLoad = dyn_cast<tt::LoadOp>(op))
@@ -343,13 +451,18 @@ void Pingponger::getDotPingponged() {
   // software pipelining and dot rank=2. Also only accept the for-loop with
   // supported combination of operations because this transformation is very
   // tightly scheduling the latencies.
-  if (gLoadOps.size() != 2 || lLoadOps.size() != 2 || dotOps.size() != 1)
+  if (gLoadOps.size() < 2 || lLoadOps.size() < 2 || dotOps.size() != 1) {
+    std::stringstream message;
+    message << "Unable to match ping pong scheduling pattern. Details: "
+            << gLoadOps.size() << " global loads, " << lLoadOps.size()
+            << " local loads, " << dotOps.size() << " dot products";
+    LDBG(message.str());
     return;
-
+  }
   // Pingpong scheduling tries to form two different types of the instruction
   // clusters, i.e., Dot clusters and Memory clusters. While each SIMD has
   // two concurrent warps, both warps can execute a different type of
-  // instruction cluster in parallel.Here are currently available patterns,
+  // instruction cluster in parallel. Here are currently available patterns,
   // more patterns could be added later.
   //
   // (1) One Dot-Memory (ping-pong) cluster
@@ -364,21 +477,78 @@ void Pingponger::getDotPingponged() {
   //   GPU to hold all the data for the calculation. Such large tile size
   //   exceeds the amount of register GPU has so, we need to split the dot
   //   into several pieces.
+  //
+  // (3) Two Dot-Memory (ping-pongx2) clusters
+  //  :Covers medium sized tile e.g., 256x128x64_FP16. Different tile size may
+  //  require different scheduling pattern because the loop consists of
+  //  different amount of memory transfer and dot operation. This scheduling
+  //  support the tile sizes not supported by above two methods.
+  //
+  // N.B., Tile size smaller than 128x128x64_FP16 is likely not compute-bound
+  // that pingpong scheduling doesn't help much.
 
-  // TODO:
-  // - Add transformTwoPPClusters for the medium size tiles
-  // - Add definition of small/medium/large tile size considering data-type
-  //   so we can choose the transfrom per given tile size.
-  if (numWarps == 4) { // pingpong between warps from different blocks
-    // transfor a loop with small tile size
-    transformOnePPClusters(builder, loc);
-  } else if (numWarps == 8) { // pingpong between warps from the same block
-    // transfor a loop with large tile size which requires dots to be sliced
-    if (transformFourPPClusters(builder, dotOps[0]->getLoc()).failed())
+  auto dotType = dotOps[0].getType();
+  auto dotShape = dotType.getShape();
+  auto aType = dotOps[0].getA().getType();
+  auto aShape = aType.getShape();
+  auto elemWidth = aType.getElementTypeBitWidth();
+  int64_t tileSize = dotShape[0] * dotShape[1] * aShape[1] * elemWidth;
+
+  const int64_t minTile = 262144;      // e.g. 32x128x64x16bit
+  const int64_t smallTile = 16777216;  // e.g. 128x128x64x16bit
+  const int64_t mediumTile = 33554432; // smallTile x 2
+  const int64_t largeTile = 67108864;  // e.g. 256x256x64x16bit
+
+  auto encoding = cast<RankedTensorType>(aType).getEncoding();
+  auto srcEncoding = cast<ttg::DotOperandEncodingAttr>(encoding);
+  kWidth = srcEncoding.getKWidth();
+  auto mfmaEncoding = cast<ttg::AMDMfmaEncodingAttr>(srcEncoding.getParent());
+  SmallVector<int64_t> intShape;
+  intShape.push_back(mfmaEncoding.getMDim());
+  intShape.push_back(mfmaEncoding.getNDim());
+
+  if (numWarps == 4) { // Pingpong between warps from different blocks
+    // Transform a loop with small tile size.
+    // We've observed that this small tile size spent almost equivalent cycle
+    // times for issuing the memory operations and issuing dot operations,
+    // smaller tile sizes are not likely to get any advantage from current dot
+    // centric pingpong scheduling.
+    if (tileSize <= smallTile && tileSize >= minTile)
+      transformOnePPClusters(builder, loc);
+    // numWarps=4 doesn't need asymmetric sync, return.
+    return;
+  } else if (numWarps == 8) { // Pingpong between warps from the same block
+    if (gLoadOps.size() != 2 || lLoadOps.size() != 2) {
+      std::stringstream message;
+      message << "Unable to match ping pong slicing pattern. Details: "
+              << gLoadOps.size() << " global loads, " << lLoadOps.size()
+              << " local loads";
+      LDBG(message.str());
+      return;
+    }
+    // Transform a loop where the tile size requires dots to be sliced
+    if (tileSize == mediumTile) {
+      if (transformTwoPPClusters(builder, dotOps[0]->getLoc()).failed()) {
+        LDBG("Encountered failure when trying to execute the two ping pong "
+             "cluster transformation");
+        return;
+      }
+    } else if (tileSize >= largeTile) {
+      // Avoid known register spilling. i.e., mfma16x16x16 & largetile & kpack>1
+      if (intShape[0] == 16 && intShape[1] == 16 && kWidth == 8) {
+        LDBG("Reached known register spilling case, skip pingpong scheduling");
+        return;
+      }
+      if (transformFourPPClusters(builder, dotOps[0]->getLoc()).failed()) {
+        LDBG("Encountered failure when trying to execute the four ping pong "
+             "cluster transformation");
+        return;
+      }
+    } else
       return;
 
     // Let half of the warps start the loop first and the others follow later
-    // but in the synchronized way. This can be accompished by calling
+    // but in the synchronized way. This can be accomplished by calling
     // cond_barrier for the second half before the beginning of the loop so they
     // can wait until the first half hit the first barrier in the loop. Also
     // need to call cond_barrier for the first_half after exiting the loop, so
@@ -393,10 +563,9 @@ public:
   TritonAMDGPUBlockPingpongPass() = default;
   void runOnOperation() override {
     ModuleOp m = getOperation();
-    int32_t numWarps = ttg::TritonGPUDialect::getNumWarps(m);
     for (auto funcOp : m.getOps<tt::FuncOp>()) {
       funcOp.walk([&](scf::ForOp forOp) {
-        Pingponger pingponger(forOp, numWarps);
+        Pingponger pingponger(forOp, ttg::lookupNumWarps(forOp));
         pingponger.getDotPingponged();
       });
     }

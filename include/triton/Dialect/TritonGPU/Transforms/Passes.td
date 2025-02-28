@@ -19,7 +19,28 @@ def TritonGPUPipeline : Pass<"tritongpu-pipeline", "mlir::ModuleOp"> {
   let options = [
     Option<"numStages", "num-stages",
            "int32_t", /*default*/"3",
-           "number of pipeline stages">
+           "number of pipeline stages">,
+    Option<"dumpIntermediateSteps", "dump-intermediate-steps",
+           "bool", /*default*/"false",
+           "Dump intermediate steps">
+  ];
+}
+
+def TritonGPUTC05MMAPipeline : Pass<"tritongpu-tc05mma-pipeline", "mlir::ModuleOp"> {
+  let summary = "Test pass calling TC05MMA pipeline";
+
+  let description = [{
+    This pass is used to test the TC05MMA pipelining under LIT. Internally it calls
+    `getTC05MMASchedule` to get the schedule and then applies the pipelining.
+  }];
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect",
+                           "mlir::scf::SCFDialect",
+                           "mlir::arith::ArithDialect"];
+
+  let options = [
+    Option<"disableExpander", "disable-expander", "bool", /*default*/"false", "Run only loop pre-process">
   ];
 }
 
@@ -27,7 +48,7 @@ def TritonGPUTestPipelineAssignLatencies : Pass<"tritongpu-test-pipeline-assign-
   let summary = "test assigning latencies to interesting ops ahead of pipelining";
 
   let description = [{
-    This is a test pass that tests `assignLatencies` method of `TritonGPULoopScheduling`.
+    This is a test pass that tests `assignLatencies` method of `TritonGPUPipeline`.
   }];
 
   let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
@@ -46,13 +67,42 @@ def TritonGPUTestPipelineScheduleLoop : Pass<"tritongpu-test-pipeline-schedule-l
   let summary = "test scheduling a loop for software pipelining";
 
   let description = [{
-    This is a test pass that tests `scheduleLoop` method of `TritonGPULoopScheduling`.
+    This is a test pass that tests `scheduleLoop` method of `TritonGPUPipeline`.
   }];
 
   let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
                            "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect",
                            "mlir::scf::SCFDialect",
                            "mlir::arith::ArithDialect"];
+}
+
+def TritonGPUTestPipelineLowerLoop : Pass<"tritongpu-test-pipeline-lower-loop", "mlir::ModuleOp"> {
+  let summary = "test lowering a loop for software pipelining";
+
+  let description = [{
+    This is a test pass that tests `lowerLoop` method of `TritonGPUPipeline`.
+  }];
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect",
+                           "mlir::scf::SCFDialect",
+                           "mlir::arith::ArithDialect"];
+}
+
+def TritonGPUFuseNestedLoops : Pass<"tritongpu-fuse-nested-loops", "mlir::ModuleOp"> {
+  let summary = "fuse nested loops for pipelining";
+
+  let description = [{
+    The `tritongpu-fuse-nested-loops` pass will analyze loop nests in the module
+    that need to be pipelined and fuse them into a single loop. This composes
+    with the pipeliner to pipeline loop nests.
+  }];
+
+  let dependentDialects = [
+    "mlir::triton::gpu::TritonGPUDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::ub::UBDialect",
+  ];
 }
 
 def TritonGPUF32DotTC : Pass<"tritongpu-F32DotTC", "mlir::ModuleOp"> {
@@ -202,7 +252,7 @@ def TritonGPUReduceDataDuplication: Pass<"tritongpu-reduce-data-duplication", "m
 def TritonGPUCombineTensorSelectAndIf: Pass<"tritongpu-combine-tensor-select-and-if", "mlir::ModuleOp"> {
   let summary = "Combine tensor select and if";
 
-  let description = "For select instruction that uses the same condidtion as the if instruction in the same block "
+  let description = "For select instruction that uses the same condition as the if instruction in the same block "
                     "this pass combines the select into the if instruction, making the select operands returned by the "
                     "then/else yields.";
 
@@ -211,27 +261,13 @@ def TritonGPUCombineTensorSelectAndIf: Pass<"tritongpu-combine-tensor-select-and
 }
 
 def TritonGPUOptimizeAccumulatorInit: Pass<"tritongpu-optimize-accumulator-init", "mlir::ModuleOp"> {
-  let summary = "Replace accumulater zero-initialization with the flag indicating first use of the accumulator";
+  let summary = "Replace accumulator zero-initialization with the flag indicating first use of the accumulator";
 
   let description = "For the dot operations that support accumulator-use flag this pass replaces the zero-initialization "
                     "of the accumulator with the flag indicating the first use of the accumulator.";
 
   let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
                            "mlir::triton::TritonDialect"];
-}
-
-def TritonGPULoopScheduling: Pass<"tritongpu-loop-scheduling", "mlir::ModuleOp"> {
-  let summary = "Generate loop scheduling for SWP";
-
-  let description = "This pass sets up stages and clustering for software pipelining.";
-
-  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
-                           "mlir::triton::TritonDialect"];
-  let options = [
-    Option<"numStages", "num-stages",
-           "int32_t", /*default*/"3",
-           "number of pipeline stages">
-  ];
 }
 
 def TritonGPUCoalesceAsyncCopy: Pass<"tritongpu-coalesce-async-copy", "mlir::ModuleOp"> {
