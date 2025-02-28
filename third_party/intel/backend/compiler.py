@@ -187,6 +187,12 @@ class XPUBackend(BaseBackend):
             except subprocess.CalledProcessError:
                 # Note: LTS driver does not support ocloc query CL_DEVICE_EXTENSIONS.
                 pass
+        # debug: enbale dpas for testing
+        if os.getenv("TRITON_INTEL_ADVANCED_PATH", "0") == "1":
+            dev_prop['has_subgroup_matrix_multiply_accumulate'] = True
+            dev_prop['has_subgroup_matrix_multiply_accumulate_tensor_float32'] = False
+            dev_prop['has_subgroup_2d_block_io'] = True
+            dev_prop['has_bfloat16_conversions'] = False
         return dev_prop
 
     def parse_options(self, opts) -> Any:

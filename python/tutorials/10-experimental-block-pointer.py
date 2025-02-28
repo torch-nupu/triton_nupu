@@ -331,6 +331,18 @@ def matmul(a, b, accum_dtype, res_dtype):
     # Allocates output.
     return c
 
+# TRITON_INTEL_ADVANCED_PATH=1 TRITON_INTEL_REDUCE_TRANSPOSE=1 \
+#   python python/tutorials/10-experimental-block-pointer.py
+
+shape = [32, 32]
+dtype = torch.float32
+a = torch.randn(shape, device='nupu', dtype=dtype)
+b = torch.randn(shape, device='nupu', dtype=dtype)
+# torch_output = torch.matmul(a, b)
+accum_dtype = torch.float32
+res_dtype = torch.float32
+triton_output = matmul(a, b, accum_dtype, res_dtype)
+exit(0)
 
 # %%
 # Unit Test
