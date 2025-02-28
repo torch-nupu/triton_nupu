@@ -148,22 +148,6 @@ class CompilationHelper:
 COMPILATION_HELPER = CompilationHelper()
 
 
-# support debug driver.c
-def compile_module_from_path(src_path, name):
-    tmpdir = os.path.dirname(src_path)
-    extra_compiler_args = []
-    extra_compiler_args.extend(['-g', '-O0'])
-    if COMPILATION_HELPER.libsycl_dir:
-        extra_compiler_args += ['-Wl,-rpath,' + COMPILATION_HELPER.libsycl_dir]
-    so = _build(name, src_path, tmpdir, COMPILATION_HELPER.library_dir, COMPILATION_HELPER.include_dir,
-                COMPILATION_HELPER.libraries, extra_compile_args=extra_compiler_args)
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(name, so)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 class ArchParser:
 
     def __init__(self, cache_path: str):
@@ -315,20 +299,30 @@ class XPUUtils(object):
         return cls.instance
 
     def __init__(self):
-        import torch
-        import torch.nupu  # type-hint # noqa
-
         dirname = os.path.dirname(os.path.realpath(__file__))
-        if os.environ.get("TRITON_DEBUG", "0") == "1":
-            mod = compile_module_from_path(os.path.join(dirname, "ocl_driver.c"), "spirv_utils")
-        else:
-            mod = compile_module_from_src(Path(os.path.join(dirname, "ocl_driver.c")).read_text(), "spirv_utils")
-        self.get_device_properties = mod.get_device_properties
-        # self.load_binary = mod.load_binary
-        self.load_binary = partial(mod.load_binary, torch.nupu.current_stream(torch.nupu.current_device()).sycl_queue)
-        self.get_current_device = torch.nupu.current_device
-        self.get_current_stream = lambda idx=None: torch.nupu.current_stream(idx).sycl_queue
-        # self.get_stream = lambda idx: torch._C._xpu_getCurrentRawStream
+        # we save `spirv_utils` module so that the destructor is not called prematurely, which will unload the dll
+        # and can cause `Fatal Python error: Segmentation fault`
+        self.mod = compile_module_from_src(Path(os.path.join(dirname, "ocl_driver.c")).read_text(), "spirv_utils")
+        # self.load_binary = self.mod.load_binary
+        self.get_device_properties = self.mod.get_device_properties
+        self.context = self.mod.init_context(self.get_sycl_queue())
+        self.device_count = self.mod.init_devices(self.get_sycl_queue())
+        self.current_device = 0 if self.device_count[0] > 0 else -1
+        self.wait_on_sycl_queue = self.mod.wait_on_sycl_queue
+
+        # TODO: fix sycl_queue in ocl_driver.c
+        import torch
+        self.load_binary = partial(self.mod.load_binary, torch.nupu.current_stream(torch.nupu.current_device()).sycl_queue)
+
+    def get_current_device(self):
+        return self.current_device
+
+    def get_sycl_queue(self):
+        import torch
+        return torch.nupu.current_stream().sycl_queue
+
+    def wait(self):
+        self.wait_on_sycl_queue(self.get_sycl_queue())
 
 
 # ------------------------
@@ -448,7 +442,7 @@ def make_launcher(constants, signature):
 #include <stdio.h>
 #include <numpy/arrayobject.h>
 
-static inline void gpuAssert(ze_result_t code, const char *file, int line)
+static inline void gpuAssert(cl_int code, const char *file, int line)
 {{
   if (code != CL_SUCCESS)
   {{
@@ -474,22 +468,22 @@ static inline void checkDevicePointer(DevicePtrInfo *ptr_info, int idx, const sy
   if (!ptr_info->dev_ptr || !ptr_info->valid) {{
     return;
   }}
-  # auto context = queue.get_context();
-  # auto handle = sycl::get_native<sycl::backend::ext_oneapi_level_zero>(context);
-  # ze_memory_allocation_properties_t prop;
-  # prop.stype = ZE_STRUCTURE_TYPE_MEMORY_ALLOCATION_PROPERTIES;
-  # prop.pNext = nullptr;
-  # ze_device_handle_t device;
-  # auto res = zeMemGetAllocProperties((ze_context_handle_t)handle, ptr_info->dev_ptr, &prop, &device);
-  # if (res != ZE_RESULT_SUCCESS) {{
-  #   PyErr_Format(PyExc_ValueError,
-  #                "Cannot get memory properties for pointer argument (at %d, err=%d)", idx, res);
-  #   ptr_info->valid = false;
-  # }} else if (prop.type != ZE_MEMORY_TYPE_DEVICE) {{
-  #   PyErr_Format(PyExc_ValueError,
-  #                "Pointer argument (at %d) doesn't reference XPU device memory (cpu tensor?)", idx);
-  #   ptr_info->valid = false;
-  # }}
+  // auto context = queue.get_context();
+  // auto handle = sycl::get_native<sycl::backend::ext_oneapi_level_zero>(context);
+  // ze_memory_allocation_properties_t prop;
+  // prop.stype = ZE_STRUCTURE_TYPE_MEMORY_ALLOCATION_PROPERTIES;
+  // prop.pNext = nullptr;
+  // ze_device_handle_t device;
+  // auto res = zeMemGetAllocProperties((ze_context_handle_t)handle, ptr_info->dev_ptr, &prop, &device);
+  // if (res != ZE_RESULT_SUCCESS) {{
+  //   PyErr_Format(PyExc_ValueError,
+  //                "Cannot get memory properties for pointer argument (at %d, err=%d)", idx, res);
+  //   ptr_info->valid = false;
+  // }} else if (prop.type != ZE_MEMORY_TYPE_DEVICE) {{
+  //   PyErr_Format(PyExc_ValueError,
+  //                "Pointer argument (at %d) doesn't reference XPU device memory (cpu tensor?)", idx);
+  //   ptr_info->valid = false;
+  // }}
 }}
 
 static inline DevicePtrInfo getPointer(PyObject *obj, int idx, const sycl::queue &queue) {{
@@ -747,7 +741,7 @@ class XPUDriver(DriverBase):
 
     def get_current_stream(self, device):
         import torch
-        return torch.nupu.current_stream(device).sycl_queue
+        return torch.nupu.current_stream().sycl_queue
 
     def get_current_target(self):
         import torch
