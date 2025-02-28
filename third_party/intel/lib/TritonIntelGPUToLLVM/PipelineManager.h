@@ -23,6 +23,7 @@
 #include "mlir/Dialect/SPIRV/IR/TargetAndABI.h"
 #include "mlir/IR/PatternMatch.h"
 
+#include "intel/include/Dialect/TritonIntelGPU/IR/Utils.h"
 #include "intel/include/GPUToTritonGEN/GPUToTritonGENPass.h"
 #include "intel/include/TritonGENToLLVM/TritonGENToLLVMPass.h"
 #include "triton/Analysis/AxisInfo.h"
@@ -143,7 +144,7 @@ struct AddSPIRVEnvPattern : public mlir::OpRewritePattern<ModuleOp> {
 
   LogicalResult matchAndRewrite(ModuleOp op,
                                 PatternRewriter &rewriter) const override {
-    if (spirv::lookupTargetEnv(op)) {
+    if (!gpu::intel::hasSpirvTargetArch(op) || spirv::lookupTargetEnv(op)) {
       return failure();
     }
 
@@ -194,9 +195,8 @@ public:
       TritonIntelGPUToLLVMTypeConverter &typeConverter, int numWarps) const {
     funcPatterns.add<FuncOpConversion>(typeConverter, numWarps,
                                        /*benefit=*/1);
-    if (!isAdvancedPathEnabled)
-      mlir::cf::populateControlFlowToLLVMConversionPatterns(typeConverter,
-                                                            funcPatterns);
+    mlir::cf::populateControlFlowToLLVMConversionPatterns(typeConverter,
+                                                          funcPatterns);
   }
 
   /// Populate the conversion pipeline for various operations.
@@ -230,8 +230,8 @@ public:
                                                benefit, oneMatrixPerLoadForBT);
       intel::populateReduceOpToLLVMPatterns(typeConverter, patterns, targetInfo,
                                             benefit);
-      intel::populateScanOpToLLVMPatterns(typeConverter, patterns, targetInfo,
-                                          benefit);
+      mlir::triton::populateScanOpToLLVMPatterns(typeConverter, patterns,
+                                                 targetInfo, benefit);
       mlir::triton::populateGatherOpToLLVMPatterns(typeConverter, patterns,
                                                    targetInfo, benefit);
       intel::populateViewOpToLLVMPatterns(typeConverter, patterns, benefit);
@@ -245,8 +245,8 @@ public:
       mlir::ub::populateUBToLLVMConversionPatterns(typeConverter, patterns);
       populateAssertOpToLLVMPattern(typeConverter, patterns, targetInfo,
                                     benefit);
-      intel::populateMemoryOpToLLVMPattern(typeConverter, targetInfo, patterns,
-                                           benefit);
+      mlir::triton::populateMemoryOpToLLVMPatterns(typeConverter, targetInfo,
+                                                   patterns, benefit);
       intel::populateControlFlowOpToLLVMPattern(typeConverter, patterns,
                                                 targetInfo, benefit);
       intel::populateMakeRangeOpToLLVMPattern(typeConverter, targetInfo,

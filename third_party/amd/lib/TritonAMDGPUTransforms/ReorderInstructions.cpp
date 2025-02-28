@@ -4,6 +4,7 @@
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Pass/PassManager.h"
+#include "third_party/amd/include/Dialect/TritonAMDGPU/Utility/CommonUtils.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
@@ -15,20 +16,6 @@ namespace ttg = mlir::triton::gpu;
 //===----------------------------------------------------------------------===//
 // Utility functions
 //===----------------------------------------------------------------------===//
-
-static SmallVector<scf::ForOp> getLeafForOps(triton::FuncOp funcOp) {
-  SmallVector<scf::ForOp> allOps;
-  funcOp->walk([&](scf::ForOp forOp) { allOps.push_back(forOp); });
-
-  SmallVector<scf::ForOp> leafOps;
-  for (scf::ForOp forOp : allOps) {
-    auto searchResult = forOp.getBody()->walk(
-        [](scf::ForOp) { return WalkResult::interrupt(); });
-    if (!searchResult.wasInterrupted())
-      leafOps.push_back(forOp);
-  }
-  return leafOps;
-}
 
 // Return true if the given funcOp is a pure matmul problem; i.e.,
 // a single main loop with a single dot.
@@ -380,13 +367,21 @@ static void sinkSecondLoad(scf::ForOp forOp) {
   // Only apply the optimization when there are 2 load's in the loop
   if (loadOps.size() != 2)
     return;
+
+  auto ldAOp = loadOps[0];
+  auto loadAType = dyn_cast<RankedTensorType>(ldAOp.getType());
+  auto ldBOp = loadOps[1];
+  auto loadBType = dyn_cast<RankedTensorType>(ldBOp.getType());
+  // Only apply the optimization when loading a 2D tensor
+  if (!loadAType || !loadBType)
+    return;
+  auto tileAShape = loadAType.getShape();
+  auto tileBShape = loadBType.getShape();
+  if (tileAShape.size() != 2 || tileBShape.size() != 2)
+    return;
   // Only apply the optimization when tile size is large enough
   // 1. nonKDim >= 128
   // 2. kDim >= 64
-  auto ldAOp = loadOps[0];
-  auto tileAShape = cast<RankedTensorType>(ldAOp.getType()).getShape();
-  auto ldBOp = loadOps[1];
-  auto tileBShape = cast<RankedTensorType>(ldBOp.getType()).getShape();
   if (!(tileAShape[0] >= 128 && tileAShape[1] >= 64 && tileBShape[1] >= 128))
     return;
   // Only apply the optimization when the moving is legal
@@ -425,7 +420,7 @@ struct TritonAMDGPUReorderInstructionsPass
         scheduleGlobalLoadLocalStore(funcOp);
         funcOp.walk([&](scf::ForOp forOp) -> void { sinkSecondLoad(forOp); });
       } else {
-        SmallVector<scf::ForOp> leafForOps = getLeafForOps(funcOp);
+        SmallVector<scf::ForOp> leafForOps = triton::AMD::getLeafForOps(funcOp);
         for (auto forOp : leafForOps) {
           if (isPureMatmulLoop(forOp)) {
             scheduleGlobalLoadLocalStore(forOp);

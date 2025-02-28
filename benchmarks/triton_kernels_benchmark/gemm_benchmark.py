@@ -18,6 +18,7 @@ from triton_kernels_benchmark import xetla_kernel
 TRANSPOSE_A = os.getenv('TRANSPOSE_A', '0') == '1'
 TRANSPOSE_B = os.getenv('TRANSPOSE_B', '0') == '1'
 use_xetla = not (TRANSPOSE_A or TRANSPOSE_B)
+SMALL_GRF = os.getenv('TRITON_INTEL_ADVANCED_PATH', '0') == '0'
 
 
 @triton.autotune(
@@ -26,17 +27,19 @@ use_xetla = not (TRANSPOSE_A or TRANSPOSE_B)
             {'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 4, 'grf_mode': 'large'},
             num_stages=s, num_warps=32) for s in [1, 2, 3]
     ] + [
-        triton.Config(
-            {'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 4, 'grf_mode': 'large'},
-            num_stages=s, num_warps=32) for s in [2, 3, 4]
+        triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 4, 'grf_mode': m},
+                      num_stages=s, num_warps=w)
+        for s in [2, 3, 4]
+        for (m, w) in ([('large', 32), ('small', 64)] if SMALL_GRF else [('large', 32)])
     ] + [
         triton.Config(
             {'BLOCK_SIZE_M': 64, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 4, 'grf_mode': 'large'},
             num_stages=s, num_warps=32) for s in [2]
     ] + [
-        triton.Config(
-            {'BLOCK_SIZE_M': 8, 'BLOCK_SIZE_N': 512, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 1, 'grf_mode': 'large'},
-            num_stages=s, num_warps=32) for s in [2, 3]
+        triton.Config({'BLOCK_SIZE_M': 8, 'BLOCK_SIZE_N': 512, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 1, 'grf_mode': m},
+                      num_stages=s, num_warps=w)
+        for s in [2, 3]
+        for (m, w) in ([('large', 32), ('small', 64)] if SMALL_GRF else [('large', 32)])
     ],
     key=['M', 'N', 'K'],
 )
@@ -59,7 +62,7 @@ def matmul_kernel_with_block_pointers(
     group_id = pid // num_pid_in_group
     first_pid_m = group_id * GROUP_SIZE_M
     group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
-    pid_m = first_pid_m + (pid % group_size_m)
+    pid_m = first_pid_m + ((pid % num_pid_in_group) % group_size_m)
     pid_n = (pid % num_pid_in_group) // group_size_m
 
     a_block_ptr = tl.make_block_ptr(base=a_ptr, shape=(M, K), strides=(stride_am, stride_ak),
@@ -91,9 +94,10 @@ def matmul_kernel_with_block_pointers(
             {'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 4, 'grf_mode': 'large'},
             num_stages=s, num_warps=32) for s in [2, 3]
     ] + [
-        triton.Config(
-            {'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 4, 'grf_mode': 'large'},
-            num_stages=s, num_warps=32) for s in [2]
+        triton.Config({'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 128, 'BLOCK_SIZE_K': 32, 'GROUP_SIZE_M': 4, 'grf_mode': m},
+                      num_stages=s, num_warps=w)
+        for s in [2]
+        for (m, w) in ([('large', 32), ('small', 64)] if SMALL_GRF else [('large', 32)])
     ] + [
         triton.Config(
             {'BLOCK_SIZE_M': 128, 'BLOCK_SIZE_N': 1024, 'BLOCK_SIZE_K': 16, 'GROUP_SIZE_M': 4, 'grf_mode': 'large'},
@@ -133,7 +137,7 @@ def matmul_kernel_with_block_pointers_batched(
     group_id = pid // num_pid_in_group
     first_pid_m = group_id * GROUP_SIZE_M
     group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
-    pid_m = first_pid_m + (pid % group_size_m)
+    pid_m = first_pid_m + ((pid % num_pid_in_group) % group_size_m)
     pid_n = (pid % num_pid_in_group) // group_size_m
 
     offset_a = bid.to(tl.int64) * stride_az
@@ -219,41 +223,63 @@ def get_shapes(B, M, N, K, transpose_a, transpose_b):
     return a_shape, b_shape
 
 
+X_VALS = [[1, 1024 * i, 1024 * i, 1024 * i] for i in [1, 2, 4, 8]] + [
+    [1, 1, 13824, 5120],
+    [1, 4, 12288, 4096],
+    [1, 512, 8192, 8192],
+    [1, 512, 8192, 32768],
+    [1, 512, 32768, 8192],
+    [1, 1024, 8192, 16384],
+    [1, 1024, 8192, 28672],
+    [1, 3072, 3072, 4096],  # FIXME: Remove this case when gemm_streamk_benchmark can get better performance
+    [1, 4096, 8192, 16384],
+    [1, 8192, 1024, 16384],
+    [1, 8192, 4096, 16384],
+    [1, 16384, 1024, 8192],
+    [1, 16384, 4096, 8192],
+    [1, 16384, 8192, 1024],
+    [1, 16384, 8192, 4096],
+    [4, 32768, 128, 4096],
+    [4, 32768, 4096, 128],
+    [32, 4096, 128, 4096],
+    [4096, 8, 128, 16384],
+    [4096, 8, 16384, 128],
+]
+
+DEVICE_NAME = torch.xpu.get_device_name()
+DEVICE_TOTAL_MEMORY = torch.xpu.get_device_properties().total_memory
+
+
+def is_enough_memory(x_val):
+    # x_val: (B, M, N, K)
+    B, M, N, K = x_val
+    # a: (B, M, K) bfloat16
+    # b: (B, N, K) bfloat16
+    # c: (B, M, N) float32
+    # pytorch reference: (B, M, N) float32
+    required_memory = B * M * K * 2 + B * N * K * 2 + 2 * B * M * N * 4
+    enough_memory = required_memory < DEVICE_TOTAL_MEMORY
+    if not enough_memory:
+        print(f"'{x_val}' combination skipped for '{DEVICE_NAME}'; {required_memory=} but {DEVICE_TOTAL_MEMORY=}")
+    return enough_memory
+
+
+X_VALS = [x_val for x_val in X_VALS if is_enough_memory(x_val)]
+
+
 # Benchmark Performance
 @benchmark_suit.perf_report(
     benchmark_suit.Benchmark(
         # argument names to use as an x-axis for the plot
         x_names=['B', 'M', 'N', 'K'],
         # different possible values for `x_name`
-        x_vals=[[1, 1024 * i, 1024 * i, 1024 * i] for i in [1, 2, 4, 8]] +  #
-        [  #
-            [1, 1, 13824, 5120],  #
-            [1, 4, 12288, 4096],  #
-            [1, 512, 8192, 8192],  #
-            [1, 512, 8192, 32768],  #
-            [1, 512, 32768, 8192],  #
-            [1, 1024, 8192, 16384],  #
-            [1, 1024, 8192, 28672],  #
-            [1, 3072, 3072, 4096],  # FIXME: Remove this case when gemm_streamk_benchmark can get better performance
-            [1, 4096, 8192, 16384],  #
-            [1, 8192, 1024, 16384],  #
-            [1, 8192, 4096, 16384],  #
-            [1, 16384, 1024, 8192],  #
-            [1, 16384, 4096, 8192],  #
-            [1, 16384, 8192, 1024],  #
-            [1, 16384, 8192, 4096],  #
-            [4, 32768, 128, 4096],  #
-            [4, 32768, 4096, 128],  #
-            [32, 4096, 128, 4096],  #
-            [4096, 8, 128, 16384],  #
-            [4096, 8, 16384, 128]
-        ],
+        x_vals=X_VALS,
         line_arg='provider',
         # argument name whose value corresponds to a different line in the plot
         # possible values for `line_arg``
-        line_vals=['triton'] + (['xetla'] if use_xetla else ['onednn']),
+        line_vals=['triton', 'onednn'] + (['xetla'] if use_xetla else []),
         # label name for the lines
-        line_names=['Triton'] + (['XeTLA'] if use_xetla else ['onednn']),
+        line_names=['Triton', 'OneDNN'] + (['XeTLA'] if use_xetla else []),
         # line styles
         styles=[('green', '-'), ('green', '--'), ('blue', '-'), ('blue', '--')],
         ylabel=['GB/s', 'TFlops'],  # label name for the y-axis
@@ -291,7 +317,7 @@ def benchmark(B, M, N, K, provider):
         triton_fn = lambda: matmul(a, b, c, transpose_a=TRANSPOSE_A, transpose_b=TRANSPOSE_B)
         torch_fn = lambda: torch.matmul(torch_a, torch_b).to(torch.float32)
         rtol = 1e-2 if a.dtype == torch.bfloat16 else 1e-3
-        benchmark_suit.assert_close(triton_fn(), torch_fn(), atol=1e-4, rtol=rtol, err_msg='triton to torch')
+        benchmark_suit.assert_close(triton_fn, torch_fn, atol=1e-4, rtol=rtol, err_msg='triton to torch')
         _, min_ms, max_ms, mean_ms, cv = benchmark_suit.do_bench(triton_fn, n_warmup=10, n_repeat=10,
                                                                  quantiles=quantiles)
     elif provider == 'xetla':
@@ -320,7 +346,7 @@ def benchmark(B, M, N, K, provider):
         xetla_fn = xetla_func_with_acc_allocation
         torch_fn = lambda: torch.matmul(a, b).to(torch.float32)
 
-        # benchmark_suit.assert_close(xetla_fn(), torch_fn(), atol=1e-4, rtol=1.0, err_msg='xetla to torch')
+        # benchmark_suit.assert_close(xetla_fn, torch_fn, atol=1e-4, rtol=1.0, err_msg='xetla to torch')
         _, min_ms, max_ms, mean_ms, cv = benchmark_suit.do_bench(xetla_fn, n_warmup=10, n_repeat=10,
                                                                  quantiles=quantiles)
     else:

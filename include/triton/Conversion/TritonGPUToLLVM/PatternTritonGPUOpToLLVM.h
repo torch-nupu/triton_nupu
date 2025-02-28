@@ -25,20 +25,8 @@ namespace triton {
 constexpr int patternBenefitDefault = 1;
 constexpr int patternBenefitPrioritizeOverLLVMConversions = 10;
 constexpr int patternBenefitClampOptimizedPattern = 20;
-
-struct BackendCallbacks {
-  /**
-   * A backend-specific callback for appending auxiliary data during
-   * `LocalStoreOp` conversion.
-   *
-   * @param[in] op The reference to the re-written `LocalStoreOp`.
-   * @param[in] count The number of issued LLVM instructions.
-   * @param[in] type The input type of issued LLVM instructions.
-   */
-  std::function<void(triton::gpu::LocalStoreOp op, size_t llvmOpCount,
-                     Type llvmOpType)>
-      localStoreOpConversion = nullptr;
-};
+constexpr int patternBenefitConvertLayoutOptimizedPattern = 20;
+constexpr int patternBenefitNvidiaTensorCoreSubviewPattern = 20;
 
 void populateElementwiseOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
@@ -49,10 +37,10 @@ void populateElementwiseOpToLLVMPatterns(
 // callback receives 1) the current source op, 2) the number of issued LLVM
 // instructions and 3) their input types. Each MLIR backend can provide a
 // callback and, thus, handle backend-specific behaviors.
-void populateMemoryOpToLLVMPatterns(
-    LLVMTypeConverter &typeConverter, const TargetInfoBase &targetInfo,
-    RewritePatternSet &patterns, PatternBenefit benefit,
-    std::optional<BackendCallbacks> backendCallbacks = std::nullopt);
+void populateMemoryOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
+                                    const TargetInfoBase &targetInfo,
+                                    RewritePatternSet &patterns,
+                                    PatternBenefit benefit);
 
 void populateAssertOpToLLVMPattern(LLVMTypeConverter &typeConverter,
                                    RewritePatternSet &patterns,
@@ -112,7 +100,7 @@ void populateSPMDOpToLLVMPattern(LLVMTypeConverter &typeConverter,
                                  PatternBenefit benefit);
 
 void populateFuncOpConversionPattern(LLVMTypeConverter &typeConverter,
-                                     RewritePatternSet &patterns, int numWarps,
+                                     RewritePatternSet &patterns,
                                      const TargetInfoBase &targetInfo,
                                      PatternBenefit benefit);
 

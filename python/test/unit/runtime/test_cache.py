@@ -72,9 +72,9 @@ def apply_src_change(target, old, new, to_modify):
     function_0.hash = None
     function_1.hash = None
     function_2.hash = None
-    to_modify.src = to_modify.src.replace(old, new)
+    to_modify._unsafe_update_src(to_modify.src.replace(old, new))
     ret = target.cache_key
-    to_modify.src = to_modify.src.replace(new, old)
+    to_modify._unsafe_update_src(to_modify.src.replace(new, old))
     return ret
 
 
@@ -114,16 +114,13 @@ def test_combine_fn_change():
         ["tl.reduce", "tl.associative_scan"],
         ["a + b", "a * b"],
     ):
-        combine_fn.src = orig_combine_fn_src.replace("COMBINE_OP", combine_op)
-        kernel_with_combine_fn.src = orig_kernel_src.replace("REDUCE_OR_SCAN", reduce_or_scan)
+        combine_fn._unsafe_update_src(orig_combine_fn_src.replace("COMBINE_OP", combine_op))
+        kernel_with_combine_fn._unsafe_update_src(orig_kernel_src.replace("REDUCE_OR_SCAN", reduce_or_scan))
         try:
             key = kernel_with_combine_fn.cache_key
         finally:
-            combine_fn.src = orig_combine_fn_src
-            kernel_with_combine_fn.src = orig_kernel_src
-
-            kernel_with_combine_fn.hash = None
-            combine_fn.hash = None
+            combine_fn._unsafe_update_src(orig_combine_fn_src)
+            kernel_with_combine_fn._unsafe_update_src(orig_kernel_src)
 
         assert key not in seen_keys
         seen_keys.add(key)
@@ -167,6 +164,8 @@ def test_reuse(device, fresh_triton_cache):
     for i in range(10):
         kernel[(1, )](x, 1, BLOCK=1024)
     assert counter == 1
+    device = getattr(torch, device).current_device()
+    kernel.device_caches[device][0].clear()
 
 
 @pytest.mark.parametrize('mode', ['enable', 'disable', 'disable_on_alignment'])
@@ -184,6 +183,10 @@ def test_specialize(mode, device, fresh_triton_cache):
     for i in [1, 2, 4, 8, 16, 32]:
         function[(1, )](x, i, BLOCK=512)
     assert counter == target
+    device = getattr(torch, device).current_device()
+    kernel.device_caches[device][0].clear()
+    kernel_nospec.device_caches[device][0].clear()
+    kernel_nospec_on_alignment.device_caches[device][0].clear()
 
 
 def test_annotation(device):
@@ -226,7 +229,7 @@ def test_kernel_default_arg(device):
     assert len(kernel.device_caches[device][0]) == 1
 
 
-GLOBAL_VAR: tl.constexpr = 1
+GLOBAL_VAR = tl.constexpr(1)
 
 
 def test_kernel_global_var_change(device):
@@ -266,7 +269,7 @@ def test_local_shadows_global():
     kernel[(1, )]()
 
 
-CONSTEXPR_GLOBAL: tl.constexpr = 42
+CONSTEXPR_GLOBAL = tl.constexpr(42)
 
 
 def test_local_does_not_shadow_global():
@@ -277,9 +280,9 @@ def test_local_does_not_shadow_global():
         a = CONSTEXPR_GLOBAL  # noqa
         _, CONSTEXPR_GLOBAL = 0, 0  # noqa
 
-    CONSTEXPR_GLOBAL = 42
+    CONSTEXPR_GLOBAL = tl.constexpr(42)
     kernel[(1, )]()
-    CONSTEXPR_GLOBAL = 43
+    CONSTEXPR_GLOBAL = tl.constexpr(43)
 
     # Error because the `CONSTEXPR_GLOBAL` we're modifying is the same
     # `CONSTEXPR_GLOBAL` that's read inside `kernel`.  (Alternatively, we could
@@ -291,7 +294,7 @@ def test_local_does_not_shadow_global():
         kernel[(1, )]()
 
 
-CONFLICTING_GLOBAL: tl.constexpr = 0
+CONFLICTING_GLOBAL = tl.constexpr(0)
 
 
 @triton.jit
@@ -379,27 +382,6 @@ def test_no_cache_callable():
     kernel[(1, )]()
     # `no_cache_callable_inner` should not be entered into used_global_vals.
     assert not kernel.used_global_vals
-
-
-def test_constexpr_not_callable(device) -> None:
-
-    @triton.jit
-    def kernel(X, c: tl.constexpr):
-        tl.store(X, 2)
-
-    x = torch.empty(1, dtype=torch.int32, device=device)
-    error = False
-    try:
-        kernel[(1, )](x, c="str")
-    except BaseException:
-        error = True
-    assert error is False
-    # try and catch
-    try:
-        kernel[(1, )](x, c=tl.abs)
-    except BaseException:
-        error = True
-    assert error is True
 
 
 def test_jit_warmup_cache(device) -> None:
@@ -513,7 +495,7 @@ def test_preload(device, fresh_triton_cache) -> None:
     assert specialization_data is not None
 
     # clear the cache
-    shutil.rmtree(fresh_triton_cache, ignore_errors=True)
+    shutil.rmtree(fresh_triton_cache)
     kernel_add.device_caches[device][0].clear()
 
     # preload the kernel
@@ -587,7 +569,7 @@ def test_within_2gb(device, fresh_triton_cache) -> None:
 
     def cache_hook(*args, **kwargs):
         nonlocal pointer_range_32
-        pointer_range_32 = kwargs["compile"]["configs"][0].pointer_range_32
+        pointer_range_32 = [k for k, v in kwargs["compile"]["configs"][0].items() if ['tt.pointer_range', 32] in v]
 
     JITFunction.cache_hook = cache_hook
     # In warmup we assume that the pointer range is 32 bits
@@ -599,3 +581,37 @@ def test_within_2gb(device, fresh_triton_cache) -> None:
     # Torch tensor <= 2GB
     kernel_add[(1, 0)](torch.empty(2**31 - 1, dtype=torch.int8, device=device))
     assert pointer_range_32 == [(0, )]
+
+
+def test_function_arguments(device):
+
+    @triton.jit
+    def func1():
+        return 1
+
+    @triton.jit
+    def func2():
+        return 2
+
+    @triton.jit
+    def func3(x):
+        return x
+
+    @triton.jit
+    def func4(x, y):
+        return x + y
+
+    @triton.jit
+    def kernel(Y, fn: tl.constexpr, fn_args):
+        tl.store(Y, fn(*fn_args))
+
+    JITFunction.cache_hook = None
+    JITFunction.compiled_hook = None
+    y = torch.zeros((5, ), dtype=torch.int32, device=device)
+    kernel[(1, )](y[0], func1, tuple())
+    kernel[(1, )](y[1], func2, tuple())
+    kernel[(1, )](y[2], func3, (3, ))
+    kernel[(1, )](y[3], func4, (3, 4))
+    kernel[(1, )](y[4], func1, tuple())
+    assert len(kernel.device_caches[0][0]) == 4
+    assert y.tolist() == [1, 2, 3, 7, 1]

@@ -17,6 +17,12 @@
 #include <CL/cl.h>
 #include <sycl/sycl.hpp>
 
+#if defined(_WIN32)
+#define EXPORT_FUNC __declspec(dllexport)
+#else
+#define EXPORT_FUNC __attribute__((visibility("default")))
+#endif
+
 #define NPY_NO_DEPRECATED_API NPY_1_7_API_VERSION
 #include <Python.h>
 // #include <numpy/arrayobject.h>
@@ -90,11 +96,7 @@ checkSyclErrors(const std::tuple<T, cl_int, std::string> tuple) {
   return std::get<0>(tuple);
 }
 
-static PyObject *getDeviceProperties(PyObject *self, PyObject *args) {
-  int device_id;
-  if (!PyArg_ParseTuple(args, "i", &device_id))
-    return NULL;
-
+extern "C" EXPORT_FUNC PyObject *get_device_properties(int device_id) {
   if (device_id > g_sycl_devices.size()) {
     std::cerr << "Device is not found " << std::endl;
     return NULL;
@@ -137,15 +139,15 @@ void freeKernelBundle(PyObject *p) {
       PyCapsule_GetPointer(p, "kernel_bundle"));
 }
 
-static PyObject *loadBinary(PyObject *self, PyObject *args) {
+extern "C" EXPORT_FUNC PyObject *load_binary(PyObject *args) {
   PyObject *quene;
-  const char *name, *build_flags;
+  const char *name, *build_flags_ptr;
   int shared;
   PyObject *py_bytes;
   int devId;
 
   if (!PyArg_ParseTuple(args, "OsSisi", &quene, &name, &py_bytes, &shared,
-                        &build_flags, &devId)) {
+                        &build_flags_ptr, &devId)) {
     std::cerr << "loadBinary arg parse failed" << std::endl;
     return NULL;
   }
@@ -170,7 +172,7 @@ static PyObject *loadBinary(PyObject *self, PyObject *args) {
   const auto ocl_device = sycl::get_native<sycl::backend::opencl>(*sycl_device);
 
   auto ocl_module = checkSyclErrors(create_module(
-      ocl_context, ocl_device, binary_ptr, binary_size, build_flags, true));
+      ocl_context, ocl_device, binary_ptr, binary_size, build_flags_ptr, true));
   auto ocl_kernel = checkSyclErrors(create_function(ocl_module, kernel_name));
 
   // auto mod = new sycl::kernel_bundle<sycl::bundle_state::executable>(
@@ -192,24 +194,24 @@ static PyObject *loadBinary(PyObject *self, PyObject *args) {
   return Py_BuildValue("(OOii)", kernel_bundle_py, kernel_py, n_regs, n_spills);
 }
 
-static PyMethodDef ModuleMethods[] = {
-    {"load_binary", loadBinary, METH_VARARGS,
-     "Load provided SPV into OpenCL driver"},
-    {"get_device_properties", getDeviceProperties, METH_VARARGS,
-     "Get the properties for a given device"},
-    {NULL, NULL, 0, NULL} // sentinel
-};
+extern "C" EXPORT_FUNC PyObject *init_context(PyObject *cap) {
+  // Do nothing for now
+  auto context = -1;
+  return Py_BuildValue("(K)", (uint64_t)context);
+}
 
-static struct PyModuleDef ModuleDef = {PyModuleDef_HEAD_INIT, "spirv_utils",
-                                       NULL, // documentation
-                                       -1,   // size
-                                       ModuleMethods};
+extern "C" EXPORT_FUNC PyObject *init_devices(PyObject *cap) {
+  // Do nothing for now
+  const uint32_t deviceCount = g_sycl_devices.size();
+  return Py_BuildValue("(i)", deviceCount);
+}
 
-PyMODINIT_FUNC PyInit_spirv_utils(void) {
-  PyObject *m = PyModule_Create(&ModuleDef);
-  if (m == NULL) {
+extern "C" EXPORT_FUNC PyObject *wait_on_sycl_queue(PyObject *cap) {
+  void *queue = NULL;
+  if (!(queue = PyLong_AsVoidPtr(cap)))
     return NULL;
-  }
-  PyModule_AddFunctions(m, ModuleMethods);
-  return m;
+  sycl::queue *sycl_queue = static_cast<sycl::queue *>(queue);
+  sycl_queue->wait();
+
+  return Py_None;
 }

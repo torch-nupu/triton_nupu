@@ -7,7 +7,7 @@
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "llvm/Support/Debug.h"
 
-#define DEBUG_TYPE "triton-pipeline-schedule"
+#define DEBUG_TYPE "triton-loop-pipeline"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
@@ -38,29 +38,7 @@ bool canHaveSharedEncoding(tt::LoadOp op) {
   // If used by an user with DotOp encoding, all the uses must be compatible.
   bool incompatible = false;
   getSharedEncIfAllUsersAreDotEnc(op.getResult(), incompatible);
-  if (incompatible)
-    return false;
-  // If the load is used by a LocalAllocOp, all the users need to have the same
-  // encoding.
-  if (llvm::any_of(op->getUsers(), [&](Operation *user) {
-        return isa<ttg::LocalAllocOp>(user);
-      })) {
-    ttg::SharedEncodingAttr localAllocEnc;
-    for (auto user : op->getUsers()) {
-      auto localAlloc = dyn_cast<ttg::LocalAllocOp>(user);
-      if (!localAlloc)
-        continue;
-      auto enc = mlir::cast<ttg::SharedEncodingAttr>(
-          localAlloc.getType().getEncoding());
-      if (!localAllocEnc) {
-        localAllocEnc = enc;
-      }
-      if (enc != localAllocEnc)
-        return false;
-    }
-    return true;
-  }
-  return true;
+  return !incompatible;
 }
 
 bool isSmallLoad(tt::LoadOp loadOp,
@@ -95,16 +73,42 @@ bool isPipeliningBeneficial(Operation *op, Operation *finalUser,
       return false;
     }
   }
-  if (isa<tt::ExperimentalDescriptorLoadOp>(op))
+  if (isa<tt::ExperimentalDescriptorLoadOp, tt::ExperimentalDescriptorGatherOp>(
+          op))
     return true;
-  if (isa<ttng::WarpGroupDotOp>(finalUser) &&
-      getMMALoadType(op) == MMALoadType::DoNotPipeline) {
-    LDBG("Load " << *op << " used by WarpGroupDotOp with incompatible layout");
-    return false;
-  }
   if (!canHaveSharedEncoding(cast<tt::LoadOp>(op))) {
     LDBG("Load " << *op << " cannot have shared encoding");
     return false;
+  }
+
+  ttg::SharedEncodingTrait localAllocEnc;
+  if (llvm::any_of(op->getUsers(), [&](Operation *user) {
+        return isa<ttg::LocalAllocOp>(user);
+      })) {
+    for (auto user : op->getUsers()) {
+      auto localAlloc = dyn_cast<ttg::LocalAllocOp>(user);
+      if (!localAlloc)
+        continue;
+      auto enc = mlir::cast<ttg::SharedEncodingTrait>(
+          localAlloc.getType().getEncoding());
+      if (!localAllocEnc) {
+        localAllocEnc = enc;
+      }
+      if (enc != localAllocEnc) {
+        // If the load is used by a LocalAllocOp, all the users need to have the
+        // same encoding.
+        return false;
+      }
+    }
+  }
+
+  if (localAllocEnc) {
+    auto registerTy = cast<RankedTensorType>(op->getResultTypes()[0]);
+    auto vecBytes = getCopyVecBytes(registerTy, localAllocEnc);
+    if (vecBytes < 4) {
+      // At least 4 bytes need to be consecutive for cp.async
+      return false;
+    }
   }
 
   return true;
@@ -125,7 +129,8 @@ loadOpsToIndirectionLevel(scf::ForOp forOp, bool pipelineWithoutDot,
       [&](Operation *op, Operation *finalUser, int distance) {
         if (!seen.insert(op).second || excluded.count(op))
           return;
-        if (isa<tt::LoadOp, tt::ExperimentalDescriptorLoadOp>(op)) {
+        if (isa<tt::LoadOp, tt::ExperimentalDescriptorLoadOp,
+                tt::ExperimentalDescriptorGatherOp>(op)) {
           if (!isPipeliningBeneficial(op, finalUser, axisInfoAnalysis))
             return;
           if (loadOpToIndLevel.count(op)) {
@@ -148,8 +153,8 @@ loadOpsToIndirectionLevel(scf::ForOp forOp, bool pipelineWithoutDot,
           finalUser = op;
           distance++;
         }
-        for (Value operand : op->getOperands()) {
-          if (op->hasTrait<OpTrait::DotLike>()) {
+        for (Value operand : getNestedOperands(op)) {
+          if (isa<mlir::triton::DotOpInterface>(op)) {
             // Heuristic: only pipeline A and B operands of the dot op.
             if (operand == op->getOperand(2))
               continue;
@@ -160,11 +165,21 @@ loadOpsToIndirectionLevel(scf::ForOp forOp, bool pipelineWithoutDot,
             dfs(defOp, finalUser, distance);
           }
         }
+        if (auto tmemAlloc = dyn_cast<nvidia_gpu::TMEMAllocOp>(op)) {
+          if (!tmemAlloc.getSrc()) {
+            for (auto user : tmemAlloc.getResult().getUsers()) {
+              if (auto tmemCopy = dyn_cast<nvidia_gpu::TMEMCopyOp>(user)) {
+                dfs(tmemCopy.getSrc().getDefiningOp(), finalUser, distance);
+                break;
+              }
+            }
+          }
+        }
       };
 
   bool seenDot = false;
   for (Operation &op : forOp.getBody()->without_terminator()) {
-    if (!op.hasTrait<OpTrait::DotLike>())
+    if (!isa<mlir::triton::DotOpInterface>(op))
       continue;
     seenDot = true;
     seen.clear();
@@ -175,7 +190,8 @@ loadOpsToIndirectionLevel(scf::ForOp forOp, bool pipelineWithoutDot,
   // that are not directly used by dot ops.
   if (pipelineWithoutDot && !seenDot) {
     for (Operation &op : forOp.getBody()->without_terminator()) {
-      if (!isa<tt::LoadOp, tt::ExperimentalDescriptorLoadOp>(op))
+      if (!isa<tt::LoadOp, tt::ExperimentalDescriptorLoadOp,
+               tt::ExperimentalDescriptorGatherOp>(op))
         dfs(&op, &op, 0);
     }
   }
@@ -206,8 +222,7 @@ void assignUserProvidedLatencies(scf::ForOp forOp,
 // on the requested number of stages assign the latencies in a way that
 // cover all the stages with the sum of latencies in the chain from the first
 // load to the final dot op.
-DenseMap<Operation *, int> assignLatencies(ModuleOp moduleOp,
-                                           int defaultNumStages) {
+void assignLatencies(ModuleOp moduleOp, int defaultNumStages) {
   auto getNumStagesOrDefault = [defaultNumStages](scf::ForOp forOp) -> int {
     // Use the attribute attached to the loop if it exists otherwise use the
     // global control.
@@ -225,7 +240,7 @@ DenseMap<Operation *, int> assignLatencies(ModuleOp moduleOp,
       loops.push_back(forOp);
   });
   if (loops.empty())
-    return DenseMap<Operation *, int>();
+    return;
 
   DenseMap<Operation *, int> opLatency;
   for (auto forOp : loops) {
@@ -257,17 +272,15 @@ DenseMap<Operation *, int> assignLatencies(ModuleOp moduleOp,
 
     // Calculate the stage distance between applicable loads.
     auto vals = llvm::make_second_range(loadOpToIndLevel);
-    int maxIndirectionLevel =
-        vals.empty() ? 0 : *std::max_element(vals.begin(), vals.end());
+    int maxIndirectionLevel = vals.empty() ? 0 : *llvm::max_element(vals);
     unsigned loadLatency = (numStages - 1) / (maxIndirectionLevel + 1);
 
     for (auto [loadOp, dist] : loadOpToIndLevel) {
       opLatency[loadOp] = loadLatency;
     }
   }
-  return opLatency;
+  serializeLatencies(moduleOp, opLatency);
 }
-
 } // namespace gpu
 } // namespace triton
 } // namespace mlir
