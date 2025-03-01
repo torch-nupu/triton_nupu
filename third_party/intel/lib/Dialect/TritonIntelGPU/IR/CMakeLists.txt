@@ -9,5 +9,3 @@ add_triton_library(TritonIntelGPUIR
   LINK_LIBS PUBLIC
   MLIRSideEffectInterfaces
 )
-
-target_compile_options(TritonIntelGPUIR PRIVATE "-Wno-error=switch")
