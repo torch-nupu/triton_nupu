@@ -101,6 +101,11 @@ class CompilationHelper:
 
     @cached_property
     def _compute_compilation_options_lazy(self):
+        torch_nupu_root = os.getenv("TORCH_NUPU_ROOT", default=None)
+        if torch_nupu_root:
+            self._library_dir = [f"{torch_nupu_root}/lib"]
+            self._include_dir = [f"{torch_nupu_root}/include"]
+            return
         ze_root = os.getenv("ZE_PATH", default="/usr/local")
         include_dir = [os.path.join(ze_root, "include")]
 
@@ -428,9 +433,11 @@ def make_launcher(constants, signature):
 #include <string>
 #include <iostream>
 #include <iomanip>
-// #include <level_zero/ze_api.h>
-// #include <sycl/sycl.hpp>
-#include "opencl.hpp"
+/*
+#include <level_zero/ze_api.h>
+#include <sycl/sycl.hpp>
+*/
+#include <CL/opencl.hpp>
 { "#include <ATen/record_function.h>" if COMPILATION_HELPER.inject_pytorch_dep else "" }
 
 #if defined(_WIN32)
@@ -643,13 +650,34 @@ extern "C" EXPORT_FUNC PyObject* launch(PyObject* args) {{
   //error check
   if(pStream == nullptr || py_kernel == nullptr) return NULL;
 
-  auto stream = static_cast<std::shared_ptr<cl::CommandQueue>*>(pStream)->get();
-  auto kernel_ptr = reinterpret_cast<std::shared_ptr<cl::Kernel>*>(PyCapsule_GetPointer(py_kernel, "kernel"))->get();
+  printf("aaaaa");
+  auto stream_p = reinterpret_cast<std::shared_ptr<cl::CommandQueue>*>(pStream);
+  printf("stream_p->use_count(): %ld", stream_p->use_count());
+  auto stream = stream_p->get();
+  if(stream == nullptr) printf("xxxxxx");
+  printf("bbbbb");
+  auto kernel_p = reinterpret_cast<std::shared_ptr<cl::Kernel>*>(PyCapsule_GetPointer(py_kernel, "kernel"));
+  printf("kernel_p->use_count(): %ld", kernel_p->use_count());
+  auto kernel_ptr = kernel_p->get();
+  if(kernel_ptr == nullptr) printf("yyyyy");
+  printf("ccccc");
+
+/*
+  auto stream_p = reinterpret_cast<std::shared_ptr<cl::CommandQueue>*>(pStream);
+  printf("stream_p->use_count(): %ld", stream_p->use_count());
+  auto stream = stream_p->get();
+
+  auto kernel_p = reinterpret_cast<std::shared_ptr<cl::Kernel>*>(PyCapsule_GetPointer(py_kernel, "kernel"));
+  printf("kernel_p->use_count(): %ld", kernel_p->use_count());
+  auto kernel_ptr = kernel_p->get();
   if(kernel_ptr == nullptr) return NULL;
   cl::Kernel kernel = *kernel_ptr;
+*/
 
+/*
   {newline.join(ptr_decls)}
   sycl_kernel_launch(gridX, gridY, gridZ, num_warps, threads_per_warp, shared_memory, *stream, kernel {',' + ', '.join(internal_args_list) if len(internal_args_list) > 0 else ''});
+*/
 
   if(launch_exit_hook != Py_None){{
     PyObject* args = Py_BuildValue("(O)", launch_metadata);

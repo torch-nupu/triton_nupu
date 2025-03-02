@@ -31,7 +31,7 @@
 
 #define CL_HPP_TARGET_OPENCL_VERSION 300
 #define CL_HPP_ENABLE_EXCEPTIONS
-#include "opencl.hpp"
+#include <CL/opencl.hpp>
 
 // TODO: print more debug infos if env `TRITON_DEBUG=1`
 // TODO: release cl* objects correctly
@@ -110,9 +110,9 @@ extern "C" EXPORT_FUNC PyObject *load_binary(PyObject *args) {
   assert(build_flags_ptr != nullptr && "build_flags_ptr should not be NULL");
   cl_program prog =
       clCreateProgramWithIL(cl_context.get(), binary_ptr, binary_size, NULL);
-  auto cl_prog = cl::Program(prog, true);
-  cl_prog.build(cl_dev, build_flags_ptr);
-  auto cl_kernel = std::make_shared<cl::Kernel>(cl_prog, kernel_name);
+  auto cl_prog = std::make_shared<cl::Program>(prog, true);
+  cl_prog->build(cl_dev, build_flags_ptr);
+  auto cl_kernel = std::make_shared<cl::Kernel>(*cl_prog, kernel_name);
 
   auto free_kernel = [](PyObject *p) {
     reinterpret_cast<std::shared_ptr<cl::Kernel> *>(
