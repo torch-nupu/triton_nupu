@@ -9,13 +9,11 @@
 #include <cassert>
 #include <cstddef>
 #include <iostream>
-#include <memory>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
 
-// TODO: rm
 // #include <CL/cl.h>
 // #include <sycl/sycl.hpp>
 
@@ -95,23 +93,14 @@ extern "C" EXPORT_FUNC PyObject *load_binary(PyObject *args) {
   }
   cl::CommandQueue *cl_queue = static_cast<cl::CommandQueue *>(
       PyCapsule_GetPointer(quene_capsule, "clCommandQueue"));
-  if (!cl_queue) {
+  if (!cl_queue)
     return nullptr;
-  }
-
-  std::cerr << "cl_queue: " << cl_queue << std::endl;
-  // auto cl_queue = *cl_queue_ptr;
-
-  // TODO: why `getInfo` fails ?
   cl::Context cl_context = cl_queue->getInfo<CL_QUEUE_CONTEXT>();
   cl::Device cl_dev = cl_queue->getInfo<CL_QUEUE_DEVICE>();
-  // cl::Context cl_context = cl::Context::getDefault();
-  // cl::Device cl_dev = cl::Device::getDefault();
 
   std::string kernel_name = name;
   const size_t binary_size = PyBytes_Size(py_bytes);
   uint8_t *binary_ptr = (uint8_t *)PyBytes_AsString(py_bytes);
-
   assert(binary_ptr != nullptr && "binary_ptr should not be NULL");
   assert(build_flags_ptr != nullptr && "build_flags_ptr should not be NULL");
   cl_program prog =
@@ -147,8 +136,8 @@ extern "C" EXPORT_FUNC PyObject *init_context(PyObject *cap) {
 
 extern "C" EXPORT_FUNC PyObject *init_devices(PyObject *cap) {
   // Do nothing for now
-  const uint32_t deviceCount = g_cl_devices.size();
-  return Py_BuildValue("(i)", deviceCount);
+  const uint32_t device_count = g_cl_devices.size();
+  return Py_BuildValue("(i)", device_count);
 }
 
 extern "C" EXPORT_FUNC PyObject *wait_on_sycl_queue(PyObject *cap) {

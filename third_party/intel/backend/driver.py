@@ -648,15 +648,24 @@ extern "C" EXPORT_FUNC PyObject* launch(PyObject* args) {{
       return NULL;
   }}
 
-  if (!PyCapsule_CheckExact(py_obj_stream)) return NULL;
-  void * pStream = PyCapsule_GetPointer(py_obj_stream, "clCommandQueue");
-  // void * pStream = PyLong_AsVoidPtr(py_obj_stream);
+/*
+  void * pStream = PyLong_AsVoidPtr(py_obj_stream);
   //error check
   if(pStream == nullptr || py_kernel == nullptr) return NULL;
-
+*/
+  if (!PyCapsule_CheckExact(py_obj_stream)) return NULL;
+  void * pStream = PyCapsule_GetPointer(py_obj_stream, "clCommandQueue");
+  //error check
+  if(pStream == nullptr || py_kernel == nullptr) return NULL;
   auto stream_ptr = reinterpret_cast<cl::CommandQueue*>(pStream);
   cl::CommandQueue stream = *stream_ptr;
 
+/*
+  sycl::queue stream = *(static_cast<sycl::queue*>(pStream));
+  sycl::kernel* kernel_ptr = reinterpret_cast<sycl::kernel*>(PyCapsule_GetPointer(py_kernel, "kernel"));
+  if(kernel_ptr == nullptr) return NULL;
+  sycl::kernel kernel = *kernel_ptr;
+*/
   void * pKernel = PyCapsule_GetPointer(py_kernel, "kernel");
   auto kernel_ptr = reinterpret_cast<cl::Kernel*>(pKernel);
   if(pKernel == nullptr || kernel_ptr == nullptr) return NULL;
