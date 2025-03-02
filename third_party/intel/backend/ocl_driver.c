@@ -93,15 +93,14 @@ extern "C" EXPORT_FUNC PyObject *load_binary(PyObject *args) {
   void *queue_ptr = NULL;
   if (!(queue_ptr = PyLong_AsVoidPtr(quene)))
     return NULL;
-  auto *cl_queue = static_cast<cl::CommandQueue *>(queue_ptr);
-  cl::Context cl_context =
-      cl_queue->getInfo<cl::Context>(CL_QUEUE_CONTEXT, NULL);
+  auto cl_queue =
+      static_cast<std::shared_ptr<cl::CommandQueue> *>(queue_ptr)->get();
 
-  if (devId > g_cl_devices.size()) {
-    std::cerr << "Device is not found " << std::endl;
-    return NULL;
-  }
-  const auto &device = g_cl_devices[devId];
+  // TODO: why `getInfo` fails ?
+  // cl::Context cl_context = cl_queue->getInfo<CL_QUEUE_CONTEXT>();
+  // cl::Device cl_dev = cl_queue->getInfo<CL_QUEUE_DEVICE>();
+  cl::Context cl_context = cl::Context::getDefault();
+  cl::Device cl_dev = cl::Device::getDefault();
 
   std::string kernel_name = name;
   const size_t binary_size = PyBytes_Size(py_bytes);
@@ -112,16 +111,16 @@ extern "C" EXPORT_FUNC PyObject *load_binary(PyObject *args) {
   cl_program prog =
       clCreateProgramWithIL(cl_context.get(), binary_ptr, binary_size, NULL);
   auto cl_prog = cl::Program(prog, true);
-  cl_prog.build(*device, build_flags_ptr);
-  auto ocl_kernel = std::make_shared<cl::Kernel>(cl_prog, kernel_name);
+  cl_prog.build(cl_dev, build_flags_ptr);
+  auto cl_kernel = std::make_shared<cl::Kernel>(cl_prog, kernel_name);
 
   auto free_kernel = [](PyObject *p) {
     reinterpret_cast<std::shared_ptr<cl::Kernel> *>(
         PyCapsule_GetPointer(p, "kernel"))
         ->reset();
   };
-  auto kernel_py = PyCapsule_New(reinterpret_cast<void *>(&ocl_kernel),
-                                 "kernel", free_kernel);
+  auto kernel_py = PyCapsule_New(reinterpret_cast<void *>(&cl_kernel), "kernel",
+                                 free_kernel);
 
   // TODO: support `kernel_bundle_py`
   PyObject *kernel_bundle_py = PyTuple_New(0);

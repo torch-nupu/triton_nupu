@@ -256,7 +256,8 @@ def compile_module_from_src(src, name):
     file_name = f"{name}.{sysconfig.get_config_var('EXT_SUFFIX').split('.')[-1]}"
     cache_path = cache.get_file(file_name)
     if cache_path is None:
-        with tempfile.TemporaryDirectory() as tmpdir:
+        # with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(prefix=name, dir="_demos/tmp", delete=False) as tmpdir:
             src_path = os.path.join(tmpdir, "main.cpp")
             with open(src_path, "w") as f:
                 f.write(src)
@@ -413,7 +414,7 @@ def make_launcher(constants, signature):
     # generate glue code
     newline = '\n  '
     ptr_decls = [
-        f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}, stream); if (!ptr_info{i}.valid) return NULL;"
+        f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}, *stream); if (!ptr_info{i}.valid) return NULL;"
         for i, ty in signature.items()
         if ty[0] == "*"
     ]
@@ -428,7 +429,8 @@ def make_launcher(constants, signature):
 #include <iostream>
 #include <iomanip>
 // #include <level_zero/ze_api.h>
-#include <sycl/sycl.hpp>
+// #include <sycl/sycl.hpp>
+#include "opencl.hpp"
 { "#include <ATen/record_function.h>" if COMPILATION_HELPER.inject_pytorch_dep else "" }
 
 #if defined(_WIN32)
@@ -462,7 +464,7 @@ typedef struct _DevicePtrInfo {{
   bool valid;
 }} DevicePtrInfo;
 
-static inline void checkDevicePointer(DevicePtrInfo *ptr_info, int idx, const sycl::queue &queue) {{
+static inline void checkDevicePointer(DevicePtrInfo *ptr_info, int idx, const cl::CommandQueue &queue) {{
   // just skip checks
   return;
   if (!ptr_info->dev_ptr || !ptr_info->valid) {{
@@ -486,7 +488,7 @@ static inline void checkDevicePointer(DevicePtrInfo *ptr_info, int idx, const sy
   // }}
 }}
 
-static inline DevicePtrInfo getPointer(PyObject *obj, int idx, const sycl::queue &queue) {{
+static inline DevicePtrInfo getPointer(PyObject *obj, int idx, const cl::CommandQueue &queue) {{
   DevicePtrInfo ptr_info;
   ptr_info.dev_ptr = 0;
   ptr_info.valid = true;
@@ -523,33 +525,40 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx, const sycl::queue
   return ptr_info;
 }}
 
+/*
 // start sycl
 template <class T>
 static inline void set_scalar_arg(sycl::handler &cgh, int index, const void *value) {{
   cgh.set_arg(index, *static_cast<const T *>(value));
 }}
+*/
 
-static void sycl_kernel_launch(uint32_t gridX, uint32_t gridY, uint32_t gridZ, int num_warps, int threads_per_warp, int shared_memory, sycl::queue& stream, sycl::kernel& kernel_ptr {', ' + arg_decls if len(arg_decls) > 0 else ''}) {{
+static void sycl_kernel_launch(uint32_t gridX, uint32_t gridY, uint32_t gridZ, int num_warps, int threads_per_warp, int shared_memory, cl::CommandQueue& stream, cl::Kernel& kernel {', ' + arg_decls if len(arg_decls) > 0 else ''}) {{
 
-  std::string kernel_name = kernel_ptr.get_info<sycl::info::kernel::function_name>();
+  std::string kernel_name = kernel.getInfo<CL_KERNEL_FUNCTION_NAME>();
   { 'RECORD_FUNCTION("XPU Triton kernel:" + kernel_name, {});' if COMPILATION_HELPER.inject_pytorch_dep else "" }
 
   {params_decl};
   uint32_t num_params = {num_params};
-  uint32_t expected_num_params = kernel_ptr.get_info<sycl::info::kernel::num_args>();
+  uint32_t expected_num_params = kernel.getInfo<CL_KERNEL_NUM_ARGS>();
   size_t global_range_x = gridX*threads_per_warp*num_warps;
   size_t global_range_y = gridY;
   size_t global_range_z = gridZ;
+/*
   size_t local_range_x = num_warps*threads_per_warp;
   size_t local_range_y = 1;
   size_t local_range_z = 1;
   sycl::range<3> global_range(global_range_z, global_range_y, global_range_x);
   sycl::range<3> local_range(local_range_z, local_range_y, local_range_x);
   sycl::nd_range<3> parallel_work_size(global_range, local_range);
+*/
+  cl::NDRange global_work_size(global_range_x, global_range_y, global_range_z);
+  cl::NDRange local_work_size(num_warps*threads_per_warp, 1, 1);
   if (shared_memory) {{
     expected_num_params -= 1;
   }}
   assert(num_params == expected_num_params && "number of kernel param not matched");
+/*
   // Submit the imported kernel.
   auto cgf = [&](sycl::handler &cgh) {{
     {" ".join(f'set_scalar_arg<{ty_to_cpp(item)}>(cgh, {idx}, params[{idx}]);' for idx, item in enumerate([signature[i] for i in signature if signature[i] != "constexpr"]))}
@@ -563,6 +572,21 @@ static void sycl_kernel_launch(uint32_t gridX, uint32_t gridY, uint32_t gridZ, i
     }}
   }};
   auto event = stream.submit(cgf);
+*/
+
+  kernel.setArg(0, arg0);
+  kernel.setArg(1, arg1);
+  kernel.setArg(2, arg2);
+  if (shared_memory) {{
+    kernel.setArg(num_params, cl::Local(shared_memory));
+  }}
+  stream.enqueueNDRangeKernel(
+      kernel,
+      cl::NullRange,
+      global_work_size,
+      local_work_size
+  );
+
 }}
 // end sycl
 
@@ -619,13 +643,13 @@ extern "C" EXPORT_FUNC PyObject* launch(PyObject* args) {{
   //error check
   if(pStream == nullptr || py_kernel == nullptr) return NULL;
 
-  sycl::queue stream = *(static_cast<sycl::queue*>(pStream));
-  sycl::kernel* kernel_ptr = reinterpret_cast<sycl::kernel*>(PyCapsule_GetPointer(py_kernel, "kernel"));
+  auto stream = static_cast<std::shared_ptr<cl::CommandQueue>*>(pStream)->get();
+  auto kernel_ptr = reinterpret_cast<std::shared_ptr<cl::Kernel>*>(PyCapsule_GetPointer(py_kernel, "kernel"))->get();
   if(kernel_ptr == nullptr) return NULL;
-  sycl::kernel kernel = *kernel_ptr;
+  cl::Kernel kernel = *kernel_ptr;
 
   {newline.join(ptr_decls)}
-  sycl_kernel_launch(gridX, gridY, gridZ, num_warps, threads_per_warp, shared_memory, stream, kernel {',' + ', '.join(internal_args_list) if len(internal_args_list) > 0 else ''});
+  sycl_kernel_launch(gridX, gridY, gridZ, num_warps, threads_per_warp, shared_memory, *stream, kernel {',' + ', '.join(internal_args_list) if len(internal_args_list) > 0 else ''});
 
   if(launch_exit_hook != Py_None){{
     PyObject* args = Py_BuildValue("(O)", launch_metadata);
