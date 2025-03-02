@@ -78,29 +78,35 @@ extern "C" EXPORT_FUNC PyObject *get_device_properties(int device_id) {
 }
 
 extern "C" EXPORT_FUNC PyObject *load_binary(PyObject *args) {
-  PyObject *quene;
+  PyObject *quene_capsule;
   const char *name, *build_flags_ptr;
   int shared;
   PyObject *py_bytes;
   int devId;
 
-  if (!PyArg_ParseTuple(args, "OsSisi", &quene, &name, &py_bytes, &shared,
-                        &build_flags_ptr, &devId)) {
+  if (!PyArg_ParseTuple(args, "OsSisi", &quene_capsule, &name, &py_bytes,
+                        &shared, &build_flags_ptr, &devId)) {
     std::cerr << "loadBinary arg parse failed" << std::endl;
     return NULL;
   }
 
-  void *queue_ptr = NULL;
-  if (!(queue_ptr = PyLong_AsVoidPtr(quene)))
+  if (!PyCapsule_CheckExact(quene_capsule)) {
     return NULL;
-  auto cl_queue =
-      static_cast<std::shared_ptr<cl::CommandQueue> *>(queue_ptr)->get();
+  }
+  cl::CommandQueue *cl_queue = static_cast<cl::CommandQueue *>(
+      PyCapsule_GetPointer(quene_capsule, "clCommandQueue"));
+  if (!cl_queue) {
+    return nullptr;
+  }
+
+  std::cerr << "cl_queue: " << cl_queue << std::endl;
+  // auto cl_queue = *cl_queue_ptr;
 
   // TODO: why `getInfo` fails ?
-  // cl::Context cl_context = cl_queue->getInfo<CL_QUEUE_CONTEXT>();
-  // cl::Device cl_dev = cl_queue->getInfo<CL_QUEUE_DEVICE>();
-  cl::Context cl_context = cl::Context::getDefault();
-  cl::Device cl_dev = cl::Device::getDefault();
+  cl::Context cl_context = cl_queue->getInfo<CL_QUEUE_CONTEXT>();
+  cl::Device cl_dev = cl_queue->getInfo<CL_QUEUE_DEVICE>();
+  // cl::Context cl_context = cl::Context::getDefault();
+  // cl::Device cl_dev = cl::Device::getDefault();
 
   std::string kernel_name = name;
   const size_t binary_size = PyBytes_Size(py_bytes);

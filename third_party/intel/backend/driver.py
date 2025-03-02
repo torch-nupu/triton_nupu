@@ -88,12 +88,12 @@ class CompilationHelper:
         self._library_dir = None
         self._include_dir = None
         self._libsycl_dir = None
-        self.libraries = []
-        # self.libraries = ['ze_loader']
+        self.libraries = ['ze_loader']
         if os.name != "nt":
             self.libraries += ["sycl"]
         else:
             self.libraries += ['sycl8']
+        self.libraries = []
 
     @property
     def inject_pytorch_dep(self):
@@ -419,7 +419,7 @@ def make_launcher(constants, signature):
     # generate glue code
     newline = '\n  '
     ptr_decls = [
-        f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}, *stream); if (!ptr_info{i}.valid) return NULL;"
+        f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}, stream); if (!ptr_info{i}.valid) return NULL;"
         for i, ty in signature.items()
         if ty[0] == "*"
     ]
@@ -437,6 +437,8 @@ def make_launcher(constants, signature):
 #include <level_zero/ze_api.h>
 #include <sycl/sycl.hpp>
 */
+#define CL_HPP_TARGET_OPENCL_VERSION 300
+#define CL_HPP_ENABLE_EXCEPTIONS
 #include <CL/opencl.hpp>
 { "#include <ATen/record_function.h>" if COMPILATION_HELPER.inject_pytorch_dep else "" }
 
@@ -448,7 +450,7 @@ def make_launcher(constants, signature):
 
 #define NPY_NO_DEPRECATED_API NPY_1_7_API_VERSION
 #include <Python.h>
-#include <stdio.h>
+// #include <stdio.h>
 #include <numpy/arrayobject.h>
 
 static inline void gpuAssert(cl_int code, const char *file, int line)
@@ -646,37 +648,47 @@ extern "C" EXPORT_FUNC PyObject* launch(PyObject* args) {{
       return NULL;
   }}
 
-  void * pStream = PyLong_AsVoidPtr(py_obj_stream);
+  if (!PyCapsule_CheckExact(py_obj_stream)) return NULL;
+  void * pStream = PyCapsule_GetPointer(py_obj_stream, "clCommandQueue");
+  // void * pStream = PyLong_AsVoidPtr(py_obj_stream);
   //error check
   if(pStream == nullptr || py_kernel == nullptr) return NULL;
 
+/*
   printf("aaaaa");
-  auto stream_p = reinterpret_cast<std::shared_ptr<cl::CommandQueue>*>(pStream);
-  printf("stream_p->use_count(): %ld", stream_p->use_count());
-  auto stream = stream_p->get();
-  if(stream == nullptr) printf("xxxxxx");
+  auto stream_ = reinterpret_cast<std::shared_ptr<cl::CommandQueue>*>(pStream);
+  printf("stream_->use_count(): %ld", stream_->use_count());
+  auto stream_ptr = stream_->get();
+  if(stream_ptr == nullptr) printf("xxxxxx");
+  // cl::CommandQueue stream = *stream_ptr;
   printf("bbbbb");
+*/
+
+// /*
   auto kernel_p = reinterpret_cast<std::shared_ptr<cl::Kernel>*>(PyCapsule_GetPointer(py_kernel, "kernel"));
   printf("kernel_p->use_count(): %ld", kernel_p->use_count());
   auto kernel_ptr = kernel_p->get();
   if(kernel_ptr == nullptr) printf("yyyyy");
   printf("ccccc");
+// */
 
 /*
   auto stream_p = reinterpret_cast<std::shared_ptr<cl::CommandQueue>*>(pStream);
   printf("stream_p->use_count(): %ld", stream_p->use_count());
-  auto stream = stream_p->get();
+  auto stream = *stream_p->get();
+  cl::CommandQueue stream = *stream_ptr;
+*/
+  auto stream = cl::CommandQueue::getDefault();
 
-  auto kernel_p = reinterpret_cast<std::shared_ptr<cl::Kernel>*>(PyCapsule_GetPointer(py_kernel, "kernel"));
-  printf("kernel_p->use_count(): %ld", kernel_p->use_count());
-  auto kernel_ptr = kernel_p->get();
+/*
+  auto kernel_ptr = reinterpret_cast<std::shared_ptr<cl::Kernel>*>(PyCapsule_GetPointer(py_kernel, "kernel"))->get();
   if(kernel_ptr == nullptr) return NULL;
   cl::Kernel kernel = *kernel_ptr;
 */
 
 /*
   {newline.join(ptr_decls)}
-  sycl_kernel_launch(gridX, gridY, gridZ, num_warps, threads_per_warp, shared_memory, *stream, kernel {',' + ', '.join(internal_args_list) if len(internal_args_list) > 0 else ''});
+  sycl_kernel_launch(gridX, gridY, gridZ, num_warps, threads_per_warp, shared_memory, stream, kernel {',' + ', '.join(internal_args_list) if len(internal_args_list) > 0 else ''});
 */
 
   if(launch_exit_hook != Py_None){{

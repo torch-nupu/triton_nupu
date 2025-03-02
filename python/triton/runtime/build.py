@@ -82,7 +82,7 @@ def _build(name, src, srcdir, library_dirs, include_dirs, libraries, extra_compi
             if os.name != "nt":
                 extra_compile_args += ["--std=c++17"]
                 # TODO: mv out of here
-                extra_compile_args += ["-fsycl"]
+                # extra_compile_args += ["-fsycl"]
                 extra_compile_args += ["-lOpenCL"]
         if os.name == "nt":
             library_dirs = library_dirs + [
