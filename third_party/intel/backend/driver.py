@@ -312,14 +312,14 @@ class XPUUtils(object):
 
         # TODO: fix sycl_queue in ocl_driver.c
         import torch
-        self.load_binary = partial(self.mod.load_binary, torch.nupu.current_stream(torch.nupu.current_device()).sycl_queue)
+        self.load_binary = partial(self.mod.load_binary, torch.nupu.current_stream())
 
     def get_current_device(self):
         return self.current_device
 
     def get_sycl_queue(self):
         import torch
-        return torch.nupu.current_stream().sycl_queue
+        return torch.nupu.current_stream()
 
     def wait(self):
         self.wait_on_sycl_queue(self.get_sycl_queue())
@@ -741,7 +741,7 @@ class XPUDriver(DriverBase):
 
     def get_current_stream(self, device):
         import torch
-        return torch.nupu.current_stream().sycl_queue
+        return torch.nupu.current_stream()
 
     def get_current_target(self):
         import torch
