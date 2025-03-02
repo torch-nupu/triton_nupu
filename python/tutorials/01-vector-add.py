@@ -87,6 +87,8 @@ x = torch.rand(size, device=DEVICE)
 y = torch.rand(size, device=DEVICE)
 output_torch = x + y
 output_triton = add(x, y)
+output_torch = output_torch.to('cpu')
+output_triton = output_triton.to('cpu')
 print(output_torch)
 print(output_triton)
 print(f'The maximum difference between torch and triton is '
