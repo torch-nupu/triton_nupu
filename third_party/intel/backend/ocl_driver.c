@@ -116,17 +116,19 @@ extern "C" EXPORT_FUNC PyObject *load_binary(PyObject *args) {
   assert(build_flags_ptr != nullptr && "build_flags_ptr should not be NULL");
   cl_program prog =
       clCreateProgramWithIL(cl_context.get(), binary_ptr, binary_size, NULL);
-  auto cl_prog = std::make_shared<cl::Program>(prog, true);
-  cl_prog->build(cl_dev, build_flags_ptr);
-  auto cl_kernel = std::make_shared<cl::Kernel>(*cl_prog, kernel_name);
+  auto cl_prog = cl::Program(prog, true);
+  cl_prog.build(cl_dev, build_flags_ptr);
+  auto cl_kernel = new cl::Kernel(cl_prog, kernel_name);
+  if (!cl_kernel) {
+    delete cl_kernel;
+    return nullptr;
+  }
 
-  auto free_kernel = [](PyObject *p) {
-    reinterpret_cast<std::shared_ptr<cl::Kernel> *>(
-        PyCapsule_GetPointer(p, "kernel"))
-        ->reset();
+  auto free_cl_kernel = [](PyObject *p) {
+    delete reinterpret_cast<cl::Kernel *>(PyCapsule_GetPointer(p, "kernel"));
   };
   auto kernel_py = PyCapsule_New(reinterpret_cast<void *>(&cl_kernel), "kernel",
-                                 free_kernel);
+                                 free_cl_kernel);
 
   // TODO: support `kernel_bundle_py`
   PyObject *kernel_bundle_py = PyTuple_New(0);
