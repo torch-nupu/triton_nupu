@@ -95,7 +95,7 @@ def _build(name, src, srcdir, library_dirs, include_dirs, libraries, extra_compi
     cc_cmd = _cc_cmd(cc, src, so, include_dirs, library_dirs, libraries)
     cc_cmd += extra_compile_args
 
-    if os.getenv("VERBOSE"):
+    if os.getenv("TRITON_VERBOSE"):
         print(" ".join(cc_cmd))
 
     subprocess.check_call(cc_cmd, stdout=subprocess.DEVNULL)

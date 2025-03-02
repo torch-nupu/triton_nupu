@@ -38,5 +38,3 @@ add_triton_library(TritonIntelGPUToLLVM
     TritonIntelGPUIR
     TritonIntelUtils
 )
-
-target_compile_options(TritonIntelGPUToLLVM PRIVATE "-Wno-error=switch")
