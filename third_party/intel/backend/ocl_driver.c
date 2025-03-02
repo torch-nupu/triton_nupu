@@ -127,7 +127,7 @@ extern "C" EXPORT_FUNC PyObject *load_binary(PyObject *args) {
   auto free_cl_kernel = [](PyObject *p) {
     delete reinterpret_cast<cl::Kernel *>(PyCapsule_GetPointer(p, "kernel"));
   };
-  auto kernel_py = PyCapsule_New(reinterpret_cast<void *>(&cl_kernel), "kernel",
+  auto kernel_py = PyCapsule_New(reinterpret_cast<void *>(cl_kernel), "kernel",
                                  free_cl_kernel);
 
   // TODO: support `kernel_bundle_py`

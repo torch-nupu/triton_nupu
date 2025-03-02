@@ -654,37 +654,13 @@ extern "C" EXPORT_FUNC PyObject* launch(PyObject* args) {{
   //error check
   if(pStream == nullptr || py_kernel == nullptr) return NULL;
 
-/*
-  printf("aaaaa");
-  auto stream_ = reinterpret_cast<std::shared_ptr<cl::CommandQueue>*>(pStream);
-  printf("stream_->use_count(): %ld", stream_->use_count());
-  auto stream_ptr = stream_->get();
-  if(stream_ptr == nullptr) printf("xxxxxx");
-  // cl::CommandQueue stream = *stream_ptr;
-  printf("bbbbb");
-*/
-
-// /*
-  auto kernel_p = reinterpret_cast<std::shared_ptr<cl::Kernel>*>(PyCapsule_GetPointer(py_kernel, "kernel"));
-  printf("kernel_p->use_count(): %ld", kernel_p->use_count());
-  auto kernel_ptr = kernel_p->get();
-  if(kernel_ptr == nullptr) printf("yyyyy");
-  printf("ccccc");
-// */
-
-/*
-  auto stream_p = reinterpret_cast<std::shared_ptr<cl::CommandQueue>*>(pStream);
-  printf("stream_p->use_count(): %ld", stream_p->use_count());
-  auto stream = *stream_p->get();
+  auto stream_ptr = reinterpret_cast<cl::CommandQueue*>(pStream);
   cl::CommandQueue stream = *stream_ptr;
-*/
-  auto stream = cl::CommandQueue::getDefault();
 
-/*
-  auto kernel_ptr = reinterpret_cast<std::shared_ptr<cl::Kernel>*>(PyCapsule_GetPointer(py_kernel, "kernel"))->get();
-  if(kernel_ptr == nullptr) return NULL;
+  void * pKernel = PyCapsule_GetPointer(py_kernel, "kernel");
+  auto kernel_ptr = reinterpret_cast<cl::Kernel*>(pKernel);
+  if(pKernel == nullptr || kernel_ptr == nullptr) return NULL;
   cl::Kernel kernel = *kernel_ptr;
-*/
 
 /*
   {newline.join(ptr_decls)}
