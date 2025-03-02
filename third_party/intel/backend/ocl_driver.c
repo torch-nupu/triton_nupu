@@ -9,13 +9,15 @@
 #include <cassert>
 #include <cstddef>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
 
-#include <CL/cl.h>
-#include <sycl/sycl.hpp>
+// TODO: rm
+// #include <CL/cl.h>
+// #include <sycl/sycl.hpp>
 
 #if defined(_WIN32)
 #define EXPORT_FUNC __declspec(dllexport)
@@ -34,87 +36,33 @@
 // TODO: print more debug infos if env `TRITON_DEBUG=1`
 // TODO: release cl* objects correctly
 
-static std::vector<std::unique_ptr<sycl::device>> g_sycl_devices;
+static std::vector<std::unique_ptr<cl::Device>> g_cl_devices;
 
-#define CL_CHECK(code)                                                         \
-  {                                                                            \
-    if (code != CL_SUCCESS) {                                                  \
-      return std::make_tuple(nullptr, code, #code);                            \
-    }                                                                          \
-  }
-
-std::tuple<cl_program, cl_int, std::string>
-create_module(cl_context context, cl_device_id device, uint8_t *binary_ptr,
-              size_t binary_size, const char *build_flags,
-              const bool is_spv = true) {
-  assert(binary_ptr != nullptr && "binary_ptr should not be NULL");
-  assert(build_flags != nullptr && "build_flags should not be NULL");
-  assert(is_spv == true && "is_spv should be true");
-
-  cl_int error_no;
-  cl_program module =
-      clCreateProgramWithIL(context, binary_ptr, binary_size, &error_no);
-  CL_CHECK(error_no);
-  CL_CHECK(clBuildProgram(module, 1, &device, nullptr, nullptr, nullptr));
-  return std::make_tuple(module, error_no, __FUNCTION__);
-}
-
-std::tuple<cl_kernel, cl_int, std::string>
-create_function(cl_program module, std::string_view func_name) {
-  cl_int error_no;
-  cl_kernel kernel = clCreateKernel(module, func_name.data(), &error_no);
-  CL_CHECK(error_no);
-  return std::make_tuple(kernel, error_no, __FUNCTION__);
-}
-
-// NOTE: must keep logic same with pytorch `c10/xpu/XPUFunctions.cpp`
+// TODO: add & keep same logic in pytorch
 void enumDevices() {
-  auto platform_list = sycl::platform::get_platforms();
-  for (const auto &platform : platform_list) {
-    auto device_list = platform.get_devices();
-    for (const auto &device : device_list) {
-      g_sycl_devices.push_back(std::make_unique<sycl::device>(device));
-    }
-  }
+  g_cl_devices.push_back(
+      std::make_unique<cl::Device>(cl::Device::getDefault()));
 }
 
 static auto _tmp_func = []() { enumDevices(); };
 static int _tmp_v = (_tmp_func(), 0);
 
-template <typename T>
-static inline T
-checkSyclErrors(const std::tuple<T, cl_int, std::string> tuple) {
-  const auto code = std::get<1>(tuple);
-  if (code != CL_SUCCESS) {
-    const auto msg = std::get<2>(tuple);
-    std::stringstream ss;
-    ss << "Triton Error [OCL]: " << "0x" << std::hex << code << ", " << msg
-       << "\n";
-    auto str = ss.str();
-    throw std::runtime_error(ss.str());
-  }
-  return std::get<0>(tuple);
-}
-
 extern "C" EXPORT_FUNC PyObject *get_device_properties(int device_id) {
-  if (device_id > g_sycl_devices.size()) {
+  if (device_id > g_cl_devices.size()) {
     std::cerr << "Device is not found " << std::endl;
     return NULL;
   }
-  const auto &sycl_device = g_sycl_devices[device_id];
-  cl_device_id ocl_device =
-      sycl::get_native<sycl::backend::opencl>(*sycl_device);
+  const auto &device = g_cl_devices[device_id];
 
-  cl::Device d = cl::Device(ocl_device);
-  int multiprocessor_count = d.getInfo<CL_DEVICE_MAX_NUM_SUB_GROUPS>();
-  int sm_clock_rate = d.getInfo<CL_DEVICE_MAX_CLOCK_FREQUENCY>();
-  int max_shared_mem = d.getInfo<CL_DEVICE_LOCAL_MEM_SIZE>();
-  int max_group_size = d.getInfo<CL_DEVICE_MAX_WORK_GROUP_SIZE>();
-  int mem_clock_rate = d.getInfo<CL_DEVICE_MAX_CLOCK_FREQUENCY>();
+  int multiprocessor_count = device->getInfo<CL_DEVICE_MAX_NUM_SUB_GROUPS>();
+  int sm_clock_rate = device->getInfo<CL_DEVICE_MAX_CLOCK_FREQUENCY>();
+  int max_shared_mem = device->getInfo<CL_DEVICE_LOCAL_MEM_SIZE>();
+  int max_group_size = device->getInfo<CL_DEVICE_MAX_WORK_GROUP_SIZE>();
+  int mem_clock_rate = device->getInfo<CL_DEVICE_MAX_CLOCK_FREQUENCY>();
   int mem_bus_width = -1;
 
   std::vector<size_t> cl_subgroup_sizes =
-      d.getInfo<CL_DEVICE_SUB_GROUP_SIZES_INTEL>();
+      device->getInfo<CL_DEVICE_SUB_GROUP_SIZES_INTEL>();
   int num_subgroup_sizes = cl_subgroup_sizes.size();
   PyObject *subgroup_sizes = PyTuple_New(num_subgroup_sizes);
   for (int i = 0; i < num_subgroup_sizes; i++) {
@@ -127,16 +75,6 @@ extern "C" EXPORT_FUNC PyObject *get_device_properties(int device_id) {
                        "mem_clock_rate", mem_clock_rate, "mem_bus_width",
                        mem_bus_width, "max_work_group_size", max_group_size,
                        "sub_group_sizes", subgroup_sizes);
-}
-
-void freeKernel(PyObject *p) {
-  delete reinterpret_cast<sycl::kernel *>(PyCapsule_GetPointer(p, "kernel"));
-}
-
-void freeKernelBundle(PyObject *p) {
-  delete reinterpret_cast<
-      sycl::kernel_bundle<sycl::bundle_state::executable> *>(
-      PyCapsule_GetPointer(p, "kernel_bundle"));
 }
 
 extern "C" EXPORT_FUNC PyObject *load_binary(PyObject *args) {
@@ -155,36 +93,36 @@ extern "C" EXPORT_FUNC PyObject *load_binary(PyObject *args) {
   void *queue_ptr = NULL;
   if (!(queue_ptr = PyLong_AsVoidPtr(quene)))
     return NULL;
-  sycl::queue *sycl_queue = static_cast<sycl::queue *>(queue_ptr);
+  auto *cl_queue = static_cast<cl::CommandQueue *>(queue_ptr);
+  cl::Context cl_context =
+      cl_queue->getInfo<cl::Context>(CL_QUEUE_CONTEXT, NULL);
 
-  if (devId > g_sycl_devices.size()) {
+  if (devId > g_cl_devices.size()) {
     std::cerr << "Device is not found " << std::endl;
     return NULL;
   }
-  const auto &sycl_device = g_sycl_devices[devId];
+  const auto &device = g_cl_devices[devId];
 
   std::string kernel_name = name;
   const size_t binary_size = PyBytes_Size(py_bytes);
   uint8_t *binary_ptr = (uint8_t *)PyBytes_AsString(py_bytes);
-  const sycl::context sycl_context = sycl_queue->get_context();
-  const auto ocl_context =
-      sycl::get_native<sycl::backend::opencl, sycl::context>(sycl_context);
-  const auto ocl_device = sycl::get_native<sycl::backend::opencl>(*sycl_device);
 
-  auto ocl_module = checkSyclErrors(create_module(
-      ocl_context, ocl_device, binary_ptr, binary_size, build_flags_ptr, true));
-  auto ocl_kernel = checkSyclErrors(create_function(ocl_module, kernel_name));
+  assert(binary_ptr != nullptr && "binary_ptr should not be NULL");
+  assert(build_flags_ptr != nullptr && "build_flags_ptr should not be NULL");
+  cl_program prog =
+      clCreateProgramWithIL(cl_context.get(), binary_ptr, binary_size, NULL);
+  auto cl_prog = cl::Program(prog, true);
+  cl_prog.build(*device, build_flags_ptr);
+  auto ocl_kernel = std::make_shared<cl::Kernel>(cl_prog, kernel_name);
 
-  // auto mod = new sycl::kernel_bundle<sycl::bundle_state::executable>(
-  //     sycl::make_kernel_bundle<sycl::backend::opencl,
-  //                              sycl::bundle_state::executable>(ocl_module,
-  //                                                              sycl_context));
-  sycl::kernel *fun = new sycl::kernel(
-      sycl::make_kernel<sycl::backend::opencl>(ocl_kernel, sycl_context));
-  auto kernel_py =
-      PyCapsule_New(reinterpret_cast<void *>(fun), "kernel", freeKernel);
-  // auto kernel_bundle_py = PyCapsule_New(reinterpret_cast<void *>(mod),
-  //                                       "kernel_bundle", freeKernelBundle);
+  auto free_kernel = [](PyObject *p) {
+    reinterpret_cast<std::shared_ptr<cl::Kernel> *>(
+        PyCapsule_GetPointer(p, "kernel"))
+        ->reset();
+  };
+  auto kernel_py = PyCapsule_New(reinterpret_cast<void *>(&ocl_kernel),
+                                 "kernel", free_kernel);
+
   // TODO: support `kernel_bundle_py`
   PyObject *kernel_bundle_py = PyTuple_New(0);
 
@@ -202,7 +140,7 @@ extern "C" EXPORT_FUNC PyObject *init_context(PyObject *cap) {
 
 extern "C" EXPORT_FUNC PyObject *init_devices(PyObject *cap) {
   // Do nothing for now
-  const uint32_t deviceCount = g_sycl_devices.size();
+  const uint32_t deviceCount = g_cl_devices.size();
   return Py_BuildValue("(i)", deviceCount);
 }
 
@@ -210,8 +148,9 @@ extern "C" EXPORT_FUNC PyObject *wait_on_sycl_queue(PyObject *cap) {
   void *queue = NULL;
   if (!(queue = PyLong_AsVoidPtr(cap)))
     return NULL;
-  sycl::queue *sycl_queue = static_cast<sycl::queue *>(queue);
-  sycl_queue->wait();
+
+  auto cl_queue = static_cast<cl::CommandQueue *>(queue);
+  cl_queue->finish();
 
   return Py_None;
 }
