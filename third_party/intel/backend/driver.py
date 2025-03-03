@@ -585,17 +585,28 @@ static void sycl_kernel_launch(uint32_t gridX, uint32_t gridY, uint32_t gridZ, i
   auto event = stream.submit(cgf);
 */
 
-  {"".join(f'kernel.setArg({idx}, params[{idx}]);\n' for idx, item in enumerate([signature[i] for i in signature if signature[i] != "constexpr"]))}
-
 /*
-  std::cout << "setArg -1" << std::endl;
-  kernel.setArg(0, params[0]);
-  std::cout << "setArg 0" << std::endl;
-  kernel.setArg(1, params[1]);
-  std::cout << "setArg 1" << std::endl;
-  kernel.setArg(2, params[2]);
-  std::cout << "setArg 2" << std::endl;
+  {"".join(f'kernel.setArg({idx}, params[{idx}]);\n' for idx, item in enumerate([signature[i] for i in signature if signature[i] != "constexpr"]))}
 */
+
+    int nbytes = 36;
+    auto buffer_0 = cl::Buffer(cl::Context::getDefault(), CL_MEM_READ_WRITE, nbytes);
+    // params[0] = &buffer_0;
+    auto buffer_1 = cl::Buffer(cl::Context::getDefault(), CL_MEM_READ_WRITE, nbytes);
+    // params[1] = &buffer_1;
+
+// /*
+  std::cout << "setArg -1" << std::endl;
+  // kernel.setArg(0, params[0]);
+  kernel.setArg(0, buffer_0);
+  std::cout << "setArg 0" << std::endl;
+  // kernel.setArg(1, params[1]);
+  kernel.setArg(1, buffer_1);
+  std::cout << "setArg 1" << std::endl;
+  // kernel.setArg(2, params[2]);
+  kernel.setArg(2, arg2);
+  std::cout << "setArg 2" << std::endl;
+// */
 
   if (shared_memory) {{
     kernel.setArg(num_params, cl::Local(shared_memory));
