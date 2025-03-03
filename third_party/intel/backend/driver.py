@@ -88,12 +88,12 @@ class CompilationHelper:
         self._library_dir = None
         self._include_dir = None
         self._libsycl_dir = None
-        self.libraries = []
-        # self.libraries = ['ze_loader']
+        self.libraries = ['ze_loader']
         if os.name != "nt":
             self.libraries += ["sycl"]
         else:
             self.libraries += ['sycl8']
+        self.libraries = []
 
     @property
     def inject_pytorch_dep(self):
@@ -101,6 +101,11 @@ class CompilationHelper:
 
     @cached_property
     def _compute_compilation_options_lazy(self):
+        torch_nupu_root = os.getenv("TORCH_NUPU_ROOT", default=None)
+        if torch_nupu_root:
+            self._library_dir = [f"{torch_nupu_root}/lib"]
+            self._include_dir = [f"{torch_nupu_root}/include"]
+            return
         ze_root = os.getenv("ZE_PATH", default="/usr/local")
         include_dir = [os.path.join(ze_root, "include")]
 
@@ -303,7 +308,7 @@ class XPUUtils(object):
         # we save `spirv_utils` module so that the destructor is not called prematurely, which will unload the dll
         # and can cause `Fatal Python error: Segmentation fault`
         self.mod = compile_module_from_src(Path(os.path.join(dirname, "ocl_driver.c")).read_text(), "spirv_utils")
-        # self.load_binary = self.mod.load_binary
+        self.load_binary = self.mod.load_binary
         self.get_device_properties = self.mod.get_device_properties
         self.context = self.mod.init_context(self.get_sycl_queue())
         self.device_count = self.mod.init_devices(self.get_sycl_queue())
@@ -312,14 +317,14 @@ class XPUUtils(object):
 
         # TODO: fix sycl_queue in ocl_driver.c
         import torch
-        self.load_binary = partial(self.mod.load_binary, torch.nupu.current_stream(torch.nupu.current_device()).sycl_queue)
+        self.load_binary = partial(self.mod.load_binary, torch.nupu.current_stream())
 
     def get_current_device(self):
         return self.current_device
 
     def get_sycl_queue(self):
         import torch
-        return torch.nupu.current_stream().sycl_queue
+        return torch.nupu.current_stream()
 
     def wait(self):
         self.wait_on_sycl_queue(self.get_sycl_queue())
@@ -393,6 +398,18 @@ def make_launcher(constants, signature):
             "uint64_t": "K",
         }[ty_to_cpp(ty)]
 
+    def gen_set_args(signature: dict):
+        set_args = ""
+        for idx, item in signature.items():
+            if item == "constexpr":
+                continue
+            elif item.startswith("*"):
+                # set_args += f"kernel.setArg({idx}, sizeof(cl::Buffer), *(void**)params[{idx}]);"
+                set_args += f"kernel.setArg({idx}, sizeof(cl::Buffer), arg{idx});"
+            else:
+                set_args += f"kernel.setArg({idx}, arg{idx});"
+        return set_args
+
     args_format = ''.join([format_of(ty) for ty in signature.values()])
     format = "iiiOOOOOO" + args_format
     signature = ','.join(map(_serialize_signature, signature.values()))
@@ -425,10 +442,15 @@ def make_launcher(constants, signature):
     src = f"""
 #include <cstddef>
 #include <string>
+/*
 #include <iostream>
 #include <iomanip>
-// #include <level_zero/ze_api.h>
+#include <level_zero/ze_api.h>
 #include <sycl/sycl.hpp>
+*/
+#define CL_HPP_TARGET_OPENCL_VERSION 300
+#define CL_HPP_ENABLE_EXCEPTIONS
+#include <CL/opencl.hpp>
 { "#include <ATen/record_function.h>" if COMPILATION_HELPER.inject_pytorch_dep else "" }
 
 #if defined(_WIN32)
@@ -462,31 +484,33 @@ typedef struct _DevicePtrInfo {{
   bool valid;
 }} DevicePtrInfo;
 
-static inline void checkDevicePointer(DevicePtrInfo *ptr_info, int idx, const sycl::queue &queue) {{
+static inline void checkDevicePointer(DevicePtrInfo *ptr_info, int idx, const cl::CommandQueue &queue) {{
   // just skip checks
   return;
   if (!ptr_info->dev_ptr || !ptr_info->valid) {{
     return;
   }}
-  // auto context = queue.get_context();
-  // auto handle = sycl::get_native<sycl::backend::ext_oneapi_level_zero>(context);
-  // ze_memory_allocation_properties_t prop;
-  // prop.stype = ZE_STRUCTURE_TYPE_MEMORY_ALLOCATION_PROPERTIES;
-  // prop.pNext = nullptr;
-  // ze_device_handle_t device;
-  // auto res = zeMemGetAllocProperties((ze_context_handle_t)handle, ptr_info->dev_ptr, &prop, &device);
-  // if (res != ZE_RESULT_SUCCESS) {{
-  //   PyErr_Format(PyExc_ValueError,
-  //                "Cannot get memory properties for pointer argument (at %d, err=%d)", idx, res);
-  //   ptr_info->valid = false;
-  // }} else if (prop.type != ZE_MEMORY_TYPE_DEVICE) {{
-  //   PyErr_Format(PyExc_ValueError,
-  //                "Pointer argument (at %d) doesn't reference XPU device memory (cpu tensor?)", idx);
-  //   ptr_info->valid = false;
-  // }}
+/*
+  auto context = queue.get_context();
+  auto handle = sycl::get_native<sycl::backend::ext_oneapi_level_zero>(context);
+  ze_memory_allocation_properties_t prop;
+  prop.stype = ZE_STRUCTURE_TYPE_MEMORY_ALLOCATION_PROPERTIES;
+  prop.pNext = nullptr;
+  ze_device_handle_t device;
+  auto res = zeMemGetAllocProperties((ze_context_handle_t)handle, ptr_info->dev_ptr, &prop, &device);
+  if (res != ZE_RESULT_SUCCESS) {{
+    PyErr_Format(PyExc_ValueError,
+                 "Cannot get memory properties for pointer argument (at %d, err=%d)", idx, res);
+    ptr_info->valid = false;
+  }} else if (prop.type != ZE_MEMORY_TYPE_DEVICE) {{
+    PyErr_Format(PyExc_ValueError,
+                 "Pointer argument (at %d) doesn't reference XPU device memory (cpu tensor?)", idx);
+    ptr_info->valid = false;
+  }}
+*/
 }}
 
-static inline DevicePtrInfo getPointer(PyObject *obj, int idx, const sycl::queue &queue) {{
+static inline DevicePtrInfo getPointer(PyObject *obj, int idx, const cl::CommandQueue &queue) {{
   DevicePtrInfo ptr_info;
   ptr_info.dev_ptr = 0;
   ptr_info.valid = true;
@@ -523,33 +547,38 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx, const sycl::queue
   return ptr_info;
 }}
 
+/*
 // start sycl
 template <class T>
 static inline void set_scalar_arg(sycl::handler &cgh, int index, const void *value) {{
   cgh.set_arg(index, *static_cast<const T *>(value));
 }}
+*/
 
-static void sycl_kernel_launch(uint32_t gridX, uint32_t gridY, uint32_t gridZ, int num_warps, int threads_per_warp, int shared_memory, sycl::queue& stream, sycl::kernel& kernel_ptr {', ' + arg_decls if len(arg_decls) > 0 else ''}) {{
+static void sycl_kernel_launch(uint32_t gridX, uint32_t gridY, uint32_t gridZ, int num_warps, int threads_per_warp, int shared_memory, cl::CommandQueue& stream, cl::Kernel& kernel {', ' + arg_decls if len(arg_decls) > 0 else ''}) {{
 
-  std::string kernel_name = kernel_ptr.get_info<sycl::info::kernel::function_name>();
+  std::string kernel_name = kernel.getInfo<CL_KERNEL_FUNCTION_NAME>();
   { 'RECORD_FUNCTION("XPU Triton kernel:" + kernel_name, {});' if COMPILATION_HELPER.inject_pytorch_dep else "" }
 
   {params_decl};
   uint32_t num_params = {num_params};
-  uint32_t expected_num_params = kernel_ptr.get_info<sycl::info::kernel::num_args>();
+  uint32_t expected_num_params = kernel.getInfo<CL_KERNEL_NUM_ARGS>();
   size_t global_range_x = gridX*threads_per_warp*num_warps;
   size_t global_range_y = gridY;
   size_t global_range_z = gridZ;
+/*
   size_t local_range_x = num_warps*threads_per_warp;
   size_t local_range_y = 1;
   size_t local_range_z = 1;
   sycl::range<3> global_range(global_range_z, global_range_y, global_range_x);
   sycl::range<3> local_range(local_range_z, local_range_y, local_range_x);
   sycl::nd_range<3> parallel_work_size(global_range, local_range);
+*/
   if (shared_memory) {{
     expected_num_params -= 1;
   }}
   assert(num_params == expected_num_params && "number of kernel param not matched");
+/*
   // Submit the imported kernel.
   auto cgf = [&](sycl::handler &cgh) {{
     {" ".join(f'set_scalar_arg<{ty_to_cpp(item)}>(cgh, {idx}, params[{idx}]);' for idx, item in enumerate([signature[i] for i in signature if signature[i] != "constexpr"]))}
@@ -563,6 +592,21 @@ static void sycl_kernel_launch(uint32_t gridX, uint32_t gridY, uint32_t gridZ, i
     }}
   }};
   auto event = stream.submit(cgf);
+*/
+
+  cl::NDRange global_work_size(global_range_x, global_range_y, global_range_z);
+  cl::NDRange local_work_size(num_warps*threads_per_warp, 1, 1);
+  {"".join(gen_set_args(signature))}
+  if (shared_memory) {{
+    kernel.setArg(num_params, cl::Local(shared_memory));
+  }}
+  stream.enqueueNDRangeKernel(
+      kernel,
+      cl::NullRange,
+      global_work_size,
+      local_work_size
+  );
+
 }}
 // end sycl
 
@@ -615,14 +659,28 @@ extern "C" EXPORT_FUNC PyObject* launch(PyObject* args) {{
       return NULL;
   }}
 
+/*
   void * pStream = PyLong_AsVoidPtr(py_obj_stream);
   //error check
   if(pStream == nullptr || py_kernel == nullptr) return NULL;
+*/
+  if (!PyCapsule_CheckExact(py_obj_stream)) return NULL;
+  void * pStream = PyCapsule_GetPointer(py_obj_stream, "clCommandQueue");
+  //error check
+  if(pStream == nullptr || py_kernel == nullptr) return NULL;
+  auto stream_ptr = reinterpret_cast<cl::CommandQueue*>(pStream);
+  cl::CommandQueue stream = *stream_ptr;
 
+/*
   sycl::queue stream = *(static_cast<sycl::queue*>(pStream));
   sycl::kernel* kernel_ptr = reinterpret_cast<sycl::kernel*>(PyCapsule_GetPointer(py_kernel, "kernel"));
   if(kernel_ptr == nullptr) return NULL;
   sycl::kernel kernel = *kernel_ptr;
+*/
+  void * pKernel = PyCapsule_GetPointer(py_kernel, "kernel");
+  auto kernel_ptr = reinterpret_cast<cl::Kernel*>(pKernel);
+  if(pKernel == nullptr || kernel_ptr == nullptr) return NULL;
+  cl::Kernel kernel = *kernel_ptr;
 
   {newline.join(ptr_decls)}
   sycl_kernel_launch(gridX, gridY, gridZ, num_warps, threads_per_warp, shared_memory, stream, kernel {',' + ', '.join(internal_args_list) if len(internal_args_list) > 0 else ''});
@@ -741,7 +799,7 @@ class XPUDriver(DriverBase):
 
     def get_current_stream(self, device):
         import torch
-        return torch.nupu.current_stream().sycl_queue
+        return torch.nupu.current_stream()
 
     def get_current_target(self):
         import torch
