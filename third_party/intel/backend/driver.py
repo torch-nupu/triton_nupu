@@ -545,11 +545,13 @@ static inline void set_scalar_arg(sycl::handler &cgh, int index, const void *val
 static void sycl_kernel_launch(uint32_t gridX, uint32_t gridY, uint32_t gridZ, int num_warps, int threads_per_warp, int shared_memory, cl::CommandQueue& stream, cl::Kernel& kernel {', ' + arg_decls if len(arg_decls) > 0 else ''}) {{
 
   std::string kernel_name = kernel.getInfo<CL_KERNEL_FUNCTION_NAME>();
+  std::cout << "kernel_name: " << kernel_name << std::endl;
   { 'RECORD_FUNCTION("XPU Triton kernel:" + kernel_name, {});' if COMPILATION_HELPER.inject_pytorch_dep else "" }
 
   {params_decl};
   uint32_t num_params = {num_params};
   uint32_t expected_num_params = kernel.getInfo<CL_KERNEL_NUM_ARGS>();
+  std::cout << "expected_num_params: " << expected_num_params << std::endl;
   size_t global_range_x = gridX*threads_per_warp*num_warps;
   size_t global_range_y = gridY;
   size_t global_range_z = gridZ;
@@ -583,9 +585,18 @@ static void sycl_kernel_launch(uint32_t gridX, uint32_t gridY, uint32_t gridZ, i
   auto event = stream.submit(cgf);
 */
 
-  kernel.setArg(0, arg0);
-  kernel.setArg(1, arg1);
-  kernel.setArg(2, arg2);
+  {" ".join(f'kernel.setArg({idx}, params[{idx}]);' for idx, item in enumerate([signature[i] for i in signature if signature[i] != "constexpr"]))}
+
+/*
+  std::cout << "setArg -1" << std::endl;
+  kernel.setArg(0, params[0]);
+  std::cout << "setArg 0" << std::endl;
+  kernel.setArg(1, params[1]);
+  std::cout << "setArg 1" << std::endl;
+  kernel.setArg(2, params[2]);
+  std::cout << "setArg 2" << std::endl;
+*/
+
   if (shared_memory) {{
     kernel.setArg(num_params, cl::Local(shared_memory));
   }}
@@ -671,10 +682,8 @@ extern "C" EXPORT_FUNC PyObject* launch(PyObject* args) {{
   if(pKernel == nullptr || kernel_ptr == nullptr) return NULL;
   cl::Kernel kernel = *kernel_ptr;
 
-/*
   {newline.join(ptr_decls)}
   sycl_kernel_launch(gridX, gridY, gridZ, num_warps, threads_per_warp, shared_memory, stream, kernel {',' + ', '.join(internal_args_list) if len(internal_args_list) > 0 else ''});
-*/
 
   if(launch_exit_hook != Py_None){{
     PyObject* args = Py_BuildValue("(O)", launch_metadata);
