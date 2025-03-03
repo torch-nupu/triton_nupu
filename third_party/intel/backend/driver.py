@@ -595,15 +595,27 @@ static void sycl_kernel_launch(uint32_t gridX, uint32_t gridY, uint32_t gridZ, i
     auto buffer_1 = cl::Buffer(cl::Context::getDefault(), CL_MEM_READ_WRITE, nbytes);
     // params[1] = &buffer_1;
 
+    //std::string arg0_type_name = kernel.getArgInfo<CL_KERNEL_ARG_TYPE_NAME>(0);
+    //std::cout << "arg0_type_name: " << arg0_type_name << std::endl;
+
+    auto b0 = (cl::Buffer*)arg0;
+    auto b0_size = b0->getInfo<CL_MEM_SIZE>();
+    std::cout << "b0_size: " << b0_size << std::endl;
+
 // /*
   std::cout << "setArg -1" << std::endl;
-  // kernel.setArg(0, params[0]);
-  kernel.setArg(0, buffer_0);
+  //kernel.setArg<void*>(0, arg0);
+  // kernel.setArg<cl::Buffer>(0, arg0);
+  // kernel.setArg(0, *(cl::Buffer*)params[0]);
+  kernel.setArg(0, sizeof(cl::Buffer), arg0);
+  // kernel.setArg(0, buffer_0);
   std::cout << "setArg 0" << std::endl;
-  // kernel.setArg(1, params[1]);
-  kernel.setArg(1, buffer_1);
+  //kernel.setArg<void*>(1, params[1]);
+  //kernel.setArg<cl::Buffer>(1, *(cl::Buffer*)params[1]);
+  // kernel.setArg(1, buffer_1);
+  kernel.setArg(1, sizeof(cl::Buffer), arg1);
   std::cout << "setArg 1" << std::endl;
-  // kernel.setArg(2, params[2]);
+  //kernel.setArg<void*>(2, params[2]);
   kernel.setArg(2, arg2);
   std::cout << "setArg 2" << std::endl;
 // */
@@ -694,6 +706,10 @@ extern "C" EXPORT_FUNC PyObject* launch(PyObject* args) {{
   cl::Kernel kernel = *kernel_ptr;
 
   {newline.join(ptr_decls)}
+
+  std::cout << "ptr_info0.dev_ptr " << ptr_info0.dev_ptr << std::endl;
+  std::cout << "ptr_info1.dev_ptr " << ptr_info1.dev_ptr << std::endl;
+
   sycl_kernel_launch(gridX, gridY, gridZ, num_warps, threads_per_warp, shared_memory, stream, kernel {',' + ', '.join(internal_args_list) if len(internal_args_list) > 0 else ''});
 
   if(launch_exit_hook != Py_None){{
