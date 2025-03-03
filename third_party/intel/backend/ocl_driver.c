@@ -14,9 +14,6 @@
 #include <string_view>
 #include <vector>
 
-// #include <CL/cl.h>
-// #include <sycl/sycl.hpp>
-
 #if defined(_WIN32)
 #define EXPORT_FUNC __declspec(dllexport)
 #else
@@ -50,17 +47,17 @@ extern "C" EXPORT_FUNC PyObject *get_device_properties(int device_id) {
     std::cerr << "Device is not found " << std::endl;
     return NULL;
   }
-  const auto &device = g_cl_devices[device_id];
+  const auto &d = g_cl_devices[device_id];
 
-  int multiprocessor_count = device->getInfo<CL_DEVICE_MAX_NUM_SUB_GROUPS>();
-  int sm_clock_rate = device->getInfo<CL_DEVICE_MAX_CLOCK_FREQUENCY>();
-  int max_shared_mem = device->getInfo<CL_DEVICE_LOCAL_MEM_SIZE>();
-  int max_group_size = device->getInfo<CL_DEVICE_MAX_WORK_GROUP_SIZE>();
-  int mem_clock_rate = device->getInfo<CL_DEVICE_MAX_CLOCK_FREQUENCY>();
+  int multiprocessor_count = d->getInfo<CL_DEVICE_MAX_NUM_SUB_GROUPS>();
+  int sm_clock_rate = d->getInfo<CL_DEVICE_MAX_CLOCK_FREQUENCY>();
+  int max_shared_mem = d->getInfo<CL_DEVICE_LOCAL_MEM_SIZE>();
+  int max_group_size = d->getInfo<CL_DEVICE_MAX_WORK_GROUP_SIZE>();
+  int mem_clock_rate = d->getInfo<CL_DEVICE_MAX_CLOCK_FREQUENCY>();
   int mem_bus_width = -1;
 
   std::vector<size_t> cl_subgroup_sizes =
-      device->getInfo<CL_DEVICE_SUB_GROUP_SIZES_INTEL>();
+      d->getInfo<CL_DEVICE_SUB_GROUP_SIZES_INTEL>();
   int num_subgroup_sizes = cl_subgroup_sizes.size();
   PyObject *subgroup_sizes = PyTuple_New(num_subgroup_sizes);
   for (int i = 0; i < num_subgroup_sizes; i++) {

@@ -261,8 +261,7 @@ def compile_module_from_src(src, name):
     file_name = f"{name}.{sysconfig.get_config_var('EXT_SUFFIX').split('.')[-1]}"
     cache_path = cache.get_file(file_name)
     if cache_path is None:
-        # with tempfile.TemporaryDirectory() as tmpdir:
-        with tempfile.TemporaryDirectory(prefix=name, dir="_demos/tmp", delete=False) as tmpdir:
+        with tempfile.TemporaryDirectory() as tmpdir:
             src_path = os.path.join(tmpdir, "main.cpp")
             with open(src_path, "w") as f:
                 f.write(src)
@@ -462,7 +461,7 @@ def make_launcher(constants, signature):
 
 #define NPY_NO_DEPRECATED_API NPY_1_7_API_VERSION
 #include <Python.h>
-// #include <stdio.h>
+#include <stdio.h>
 #include <numpy/arrayobject.h>
 
 static inline void gpuAssert(cl_int code, const char *file, int line)
