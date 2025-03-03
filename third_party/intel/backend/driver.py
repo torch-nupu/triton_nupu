@@ -261,7 +261,7 @@ def compile_module_from_src(src, name):
     file_name = f"{name}.{sysconfig.get_config_var('EXT_SUFFIX').split('.')[-1]}"
     cache_path = cache.get_file(file_name)
     if cache_path is None:
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(prefix=f"{name}_", dir="_demos/tmp", delete=False) as tmpdir:
             src_path = os.path.join(tmpdir, "main.cpp")
             with open(src_path, "w") as f:
                 f.write(src)
