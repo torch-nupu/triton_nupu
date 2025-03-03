@@ -309,7 +309,7 @@ class XPUUtils(object):
         # we save `spirv_utils` module so that the destructor is not called prematurely, which will unload the dll
         # and can cause `Fatal Python error: Segmentation fault`
         self.mod = compile_module_from_src(Path(os.path.join(dirname, "ocl_driver.c")).read_text(), "spirv_utils")
-        # self.load_binary = self.mod.load_binary
+        self.load_binary = self.mod.load_binary
         self.get_device_properties = self.mod.get_device_properties
         self.context = self.mod.init_context(self.get_sycl_queue())
         self.device_count = self.mod.init_devices(self.get_sycl_queue())
@@ -399,6 +399,18 @@ def make_launcher(constants, signature):
             "uint64_t": "K",
         }[ty_to_cpp(ty)]
 
+    def gen_set_args(signature: dict):
+        set_args = ""
+        for idx, item in signature.items():
+            if item == "constexpr":
+                continue
+            elif item.startswith("*"):
+                # set_args += f"kernel.setArg({idx}, sizeof(cl::Buffer), *(void**)params[{idx}]);"
+                set_args += f"kernel.setArg({idx}, sizeof(cl::Buffer), arg{idx});"
+            else:
+                set_args += f"kernel.setArg({idx}, arg{idx});"
+        return set_args
+
     args_format = ''.join([format_of(ty) for ty in signature.values()])
     format = "iiiOOOOOO" + args_format
     signature = ','.join(map(_serialize_signature, signature.values()))
@@ -431,9 +443,9 @@ def make_launcher(constants, signature):
     src = f"""
 #include <cstddef>
 #include <string>
+/*
 #include <iostream>
 #include <iomanip>
-/*
 #include <level_zero/ze_api.h>
 #include <sycl/sycl.hpp>
 */
@@ -479,22 +491,24 @@ static inline void checkDevicePointer(DevicePtrInfo *ptr_info, int idx, const cl
   if (!ptr_info->dev_ptr || !ptr_info->valid) {{
     return;
   }}
-  // auto context = queue.get_context();
-  // auto handle = sycl::get_native<sycl::backend::ext_oneapi_level_zero>(context);
-  // ze_memory_allocation_properties_t prop;
-  // prop.stype = ZE_STRUCTURE_TYPE_MEMORY_ALLOCATION_PROPERTIES;
-  // prop.pNext = nullptr;
-  // ze_device_handle_t device;
-  // auto res = zeMemGetAllocProperties((ze_context_handle_t)handle, ptr_info->dev_ptr, &prop, &device);
-  // if (res != ZE_RESULT_SUCCESS) {{
-  //   PyErr_Format(PyExc_ValueError,
-  //                "Cannot get memory properties for pointer argument (at %d, err=%d)", idx, res);
-  //   ptr_info->valid = false;
-  // }} else if (prop.type != ZE_MEMORY_TYPE_DEVICE) {{
-  //   PyErr_Format(PyExc_ValueError,
-  //                "Pointer argument (at %d) doesn't reference XPU device memory (cpu tensor?)", idx);
-  //   ptr_info->valid = false;
-  // }}
+/*
+  auto context = queue.get_context();
+  auto handle = sycl::get_native<sycl::backend::ext_oneapi_level_zero>(context);
+  ze_memory_allocation_properties_t prop;
+  prop.stype = ZE_STRUCTURE_TYPE_MEMORY_ALLOCATION_PROPERTIES;
+  prop.pNext = nullptr;
+  ze_device_handle_t device;
+  auto res = zeMemGetAllocProperties((ze_context_handle_t)handle, ptr_info->dev_ptr, &prop, &device);
+  if (res != ZE_RESULT_SUCCESS) {{
+    PyErr_Format(PyExc_ValueError,
+                 "Cannot get memory properties for pointer argument (at %d, err=%d)", idx, res);
+    ptr_info->valid = false;
+  }} else if (prop.type != ZE_MEMORY_TYPE_DEVICE) {{
+    PyErr_Format(PyExc_ValueError,
+                 "Pointer argument (at %d) doesn't reference XPU device memory (cpu tensor?)", idx);
+    ptr_info->valid = false;
+  }}
+*/
 }}
 
 static inline DevicePtrInfo getPointer(PyObject *obj, int idx, const cl::CommandQueue &queue) {{
@@ -545,13 +559,11 @@ static inline void set_scalar_arg(sycl::handler &cgh, int index, const void *val
 static void sycl_kernel_launch(uint32_t gridX, uint32_t gridY, uint32_t gridZ, int num_warps, int threads_per_warp, int shared_memory, cl::CommandQueue& stream, cl::Kernel& kernel {', ' + arg_decls if len(arg_decls) > 0 else ''}) {{
 
   std::string kernel_name = kernel.getInfo<CL_KERNEL_FUNCTION_NAME>();
-  std::cout << "kernel_name: " << kernel_name << std::endl;
   { 'RECORD_FUNCTION("XPU Triton kernel:" + kernel_name, {});' if COMPILATION_HELPER.inject_pytorch_dep else "" }
 
   {params_decl};
   uint32_t num_params = {num_params};
   uint32_t expected_num_params = kernel.getInfo<CL_KERNEL_NUM_ARGS>();
-  std::cout << "expected_num_params: " << expected_num_params << std::endl;
   size_t global_range_x = gridX*threads_per_warp*num_warps;
   size_t global_range_y = gridY;
   size_t global_range_z = gridZ;
@@ -563,8 +575,6 @@ static void sycl_kernel_launch(uint32_t gridX, uint32_t gridY, uint32_t gridZ, i
   sycl::range<3> local_range(local_range_z, local_range_y, local_range_x);
   sycl::nd_range<3> parallel_work_size(global_range, local_range);
 */
-  cl::NDRange global_work_size(global_range_x, global_range_y, global_range_z);
-  cl::NDRange local_work_size(num_warps*threads_per_warp, 1, 1);
   if (shared_memory) {{
     expected_num_params -= 1;
   }}
@@ -585,41 +595,9 @@ static void sycl_kernel_launch(uint32_t gridX, uint32_t gridY, uint32_t gridZ, i
   auto event = stream.submit(cgf);
 */
 
-/*
-  {"".join(f'kernel.setArg({idx}, params[{idx}]);\n' for idx, item in enumerate([signature[i] for i in signature if signature[i] != "constexpr"]))}
-*/
-
-    int nbytes = 36;
-    auto buffer_0 = cl::Buffer(cl::Context::getDefault(), CL_MEM_READ_WRITE, nbytes);
-    // params[0] = &buffer_0;
-    auto buffer_1 = cl::Buffer(cl::Context::getDefault(), CL_MEM_READ_WRITE, nbytes);
-    // params[1] = &buffer_1;
-
-    //std::string arg0_type_name = kernel.getArgInfo<CL_KERNEL_ARG_TYPE_NAME>(0);
-    //std::cout << "arg0_type_name: " << arg0_type_name << std::endl;
-
-    auto b0 = (cl::Buffer*)arg0;
-    auto b0_size = b0->getInfo<CL_MEM_SIZE>();
-    std::cout << "b0_size: " << b0_size << std::endl;
-
-// /*
-  std::cout << "setArg -1" << std::endl;
-  //kernel.setArg<void*>(0, arg0);
-  // kernel.setArg<cl::Buffer>(0, arg0);
-  // kernel.setArg(0, *(cl::Buffer*)params[0]);
-  kernel.setArg(0, sizeof(cl::Buffer), arg0);
-  // kernel.setArg(0, buffer_0);
-  std::cout << "setArg 0" << std::endl;
-  //kernel.setArg<void*>(1, params[1]);
-  //kernel.setArg<cl::Buffer>(1, *(cl::Buffer*)params[1]);
-  // kernel.setArg(1, buffer_1);
-  kernel.setArg(1, sizeof(cl::Buffer), arg1);
-  std::cout << "setArg 1" << std::endl;
-  //kernel.setArg<void*>(2, params[2]);
-  kernel.setArg(2, arg2);
-  std::cout << "setArg 2" << std::endl;
-// */
-
+  cl::NDRange global_work_size(global_range_x, global_range_y, global_range_z);
+  cl::NDRange local_work_size(num_warps*threads_per_warp, 1, 1);
+  {"".join(gen_set_args(signature))}
   if (shared_memory) {{
     kernel.setArg(num_params, cl::Local(shared_memory));
   }}
@@ -706,10 +684,6 @@ extern "C" EXPORT_FUNC PyObject* launch(PyObject* args) {{
   cl::Kernel kernel = *kernel_ptr;
 
   {newline.join(ptr_decls)}
-
-  std::cout << "ptr_info0.dev_ptr " << ptr_info0.dev_ptr << std::endl;
-  std::cout << "ptr_info1.dev_ptr " << ptr_info1.dev_ptr << std::endl;
-
   sycl_kernel_launch(gridX, gridY, gridZ, num_warps, threads_per_warp, shared_memory, stream, kernel {',' + ', '.join(internal_args_list) if len(internal_args_list) > 0 else ''});
 
   if(launch_exit_hook != Py_None){{
