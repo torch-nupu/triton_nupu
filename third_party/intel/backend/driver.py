@@ -585,7 +585,7 @@ static void sycl_kernel_launch(uint32_t gridX, uint32_t gridY, uint32_t gridZ, i
   auto event = stream.submit(cgf);
 */
 
-  {" ".join(f'kernel.setArg({idx}, params[{idx}]);' for idx, item in enumerate([signature[i] for i in signature if signature[i] != "constexpr"]))}
+  {"".join(f'kernel.setArg({idx}, params[{idx}]);\n' for idx, item in enumerate([signature[i] for i in signature if signature[i] != "constexpr"]))}
 
 /*
   std::cout << "setArg -1" << std::endl;
